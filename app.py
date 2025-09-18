@@ -1,12 +1,14 @@
 from flask import Flask
 from db import init_db, fetch_and_store_data
 from routes import home, players, teams
+import sys
 
 app = Flask(__name__)
 
 # Initialize DB on startup
 init_db()
-fetch_and_store_data()
+if '--clean' in sys.argv:
+    fetch_and_store_data()
 
 @app.route('/')
 def home_route():

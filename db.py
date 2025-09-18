@@ -133,6 +133,13 @@ def init_db():
                     web_name TEXT,
                     yellow_cards INTEGER
                 )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS player_history (
+                    player_id INTEGER,
+                    round INTEGER,
+                    total_points INTEGER,
+                    opponent_team INTEGER,
+                    FOREIGN KEY(player_id) REFERENCES players(id)
+                )''')
     conn.commit()
     conn.close()
 
@@ -148,6 +155,7 @@ def fetch_and_store_data():
     # Clear existing data
     c.execute('DELETE FROM players')
     c.execute('DELETE FROM teams')
+    c.execute('DELETE FROM player_history')
     
     # Insert teams
     for team in teams:
@@ -232,6 +240,23 @@ def fetch_and_store_data():
                    player.get('transfers_out_event'), player.get('value_form'), player.get('value_season'),
                    player.get('web_name'), player.get('yellow_cards')))
     
+    # Fetch and store player history
+    for idx, player in enumerate(players):
+        element_id = player['id']
+        web_name = player.get('web_name', f'Player {element_id}')
+        print(f"Fetching history for {web_name} ({idx+1}/{len(players)})")
+        history_url = f'https://fantasy.premierleague.com/api/element-summary/{element_id}/'
+        try:
+            history_response = requests.get(history_url)
+            history_data = history_response.json()
+            history = history_data.get('history', [])
+            for match in history:
+                c.execute('''INSERT INTO player_history (player_id, round, total_points, opponent_team)
+                             VALUES (?, ?, ?, ?)''',
+                          (element_id, match.get('round'), match.get('total_points'), match.get('opponent_team')))
+        except Exception as e:
+            print(f"Error fetching history for player {element_id}: {e}")
+    
     conn.commit()
     conn.close()
 
@@ -248,9 +273,12 @@ def get_players():
                         t.name as team_name,
                         p.now_cost,
                         p.total_points,
-                        p.form
+                        p.form,
+                        GROUP_CONCAT(ph.total_points ORDER BY ph.round DESC) as last_5_points
                  FROM players p
                  JOIN teams t ON p.team = t.id
+                 LEFT JOIN player_history ph ON p.id = ph.player_id
+                 GROUP BY p.id
                  ORDER BY p.web_name''')
     players_data = c.fetchall()
     
@@ -262,6 +290,19 @@ def get_players():
     players = []
     for row in players_data:
         player_dict = dict(zip(column_names, row))
+        # Process last_5_points
+        last_points_str = player_dict.pop('last_5_points', '')
+        if last_points_str:
+            points_list = last_points_str.split(',')
+            for i in range(5):
+                key = f'points_{i+1}'
+                if i < len(points_list):
+                    player_dict[key] = int(points_list[i])
+                else:
+                    player_dict[key] = None
+        else:
+            for i in range(5):
+                player_dict[f'points_{i+1}'] = None
         players.append(player_dict)
     
     return players
