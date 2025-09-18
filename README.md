@@ -1,2 +1,2 @@
 # FPL_agent
-An agent for helping with FPL predictions
+An agent website for helping with FPL predictions
