@@ -1,5 +1,5 @@
 import sqlite3
-from db import DB_PATH
+from database_connection import DB_PATH
 
 def test_predictions():
     conn = sqlite3.connect(DB_PATH)

@@ -1,5 +1,6 @@
 from flask import Flask
-from db import init_db, fetch_and_store_data
+from models import init_db
+from data_storage import fetch_and_store_data
 from routes import home, players, teams, player_history
 import sys
 
