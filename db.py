@@ -201,7 +201,7 @@ def fetch_and_store_data():
                         threat_rank, threat_rank_type, total_points, transfers_in,
                         transfers_in_event, transfers_out, transfers_out_event, value_form,
                         value_season, web_name, yellow_cards
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                   (player.get('assists'), player.get('birth_date'), player.get('bonus'),
                    player.get('bps'), player.get('can_select'), player.get('can_transact'),
                    player.get('chance_of_playing_next_round'), player.get('chance_of_playing_this_round'),
@@ -263,7 +263,8 @@ def fetch_and_store_data():
 def get_players():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''SELECT p.web_name,
+    c.execute('''SELECT p.id,
+                        p.web_name,
                         CASE p.element_type
                             WHEN 1 THEN 'GK'
                             WHEN 2 THEN 'DEF'
@@ -324,3 +325,26 @@ def get_teams():
         teams_list.append(team_dict)
     
     return teams_list
+
+def get_player_history(player_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''SELECT ph.*, p.web_name, p.team, t.name as team_name
+                 FROM player_history ph
+                 JOIN players p ON ph.player_id = p.id
+                 JOIN teams t ON ph.opponent_team = t.id
+                 WHERE ph.player_id = ?
+                 ORDER BY ph.season DESC, ph.round''', (player_id,))
+    history_data = c.fetchall()
+    
+    # Get column names
+    column_names = [description[0] for description in c.description]
+    
+    conn.close()
+    
+    history = []
+    for row in history_data:
+        history_dict = dict(zip(column_names, row))
+        history.append(history_dict)
+    
+    return history
