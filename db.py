@@ -238,7 +238,20 @@ def fetch_and_store_data():
 def get_players():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''SELECT * FROM players''')
+    c.execute('''SELECT p.web_name,
+                        CASE p.element_type
+                            WHEN 1 THEN 'GK'
+                            WHEN 2 THEN 'DEF'
+                            WHEN 3 THEN 'MID'
+                            WHEN 4 THEN 'FWD'
+                        END as position,
+                        t.name as team_name,
+                        p.now_cost,
+                        p.total_points,
+                        p.form
+                 FROM players p
+                 JOIN teams t ON p.team = t.id
+                 ORDER BY p.web_name''')
     players_data = c.fetchall()
     
     # Get column names
