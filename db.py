@@ -1,5 +1,7 @@
 import sqlite3
 import requests
+from sklearn.linear_model import LinearRegression
+import numpy as np
 
 API_URL = 'https://fantasy.premierleague.com/api/bootstrap-static/'
 DB_PATH = 'fpl_data.db'
@@ -133,15 +135,93 @@ def init_db():
                     web_name TEXT,
                     yellow_cards INTEGER
                 )''')
+    # Add prediction columns if not exist
+    try:
+        c.execute('ALTER TABLE players ADD COLUMN pred_match1 REAL')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE players ADD COLUMN pred_match2 REAL')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE players ADD COLUMN pred_match3 REAL')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE players ADD COLUMN total_pred REAL')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute('ALTER TABLE players ADD COLUMN pred_per_mil REAL')
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS player_history (
                     player_id INTEGER,
                     round INTEGER,
                     total_points INTEGER,
                     opponent_team INTEGER,
+                    season TEXT,
+                    assists INTEGER,
+                    bonus INTEGER,
+                    bps INTEGER,
+                    clean_sheets INTEGER,
+                    creativity REAL,
+                    goals_conceded INTEGER,
+                    goals_scored INTEGER,
+                    ict_index REAL,
+                    influence REAL,
+                    minutes INTEGER,
+                    own_goals INTEGER,
+                    penalties_missed INTEGER,
+                    penalties_saved INTEGER,
+                    red_cards INTEGER,
+                    saves INTEGER,
+                    threat REAL,
+                    value INTEGER,
+                    was_home BOOLEAN,
+                    yellow_cards INTEGER,
+                    fixture INTEGER,
+                    xP REAL,
+                    expected_assists REAL,
+                    expected_goal_involvements REAL,
+                    expected_goals REAL,
+                    expected_goals_conceded REAL,
+                    kickoff_time TEXT,
+                    modified BOOLEAN,
+                    selected INTEGER,
+                    starts INTEGER,
+                    team_a_score INTEGER,
+                    team_h_score INTEGER,
+                    transfers_balance INTEGER,
+                    transfers_in INTEGER,
+                    transfers_out INTEGER,
+                    clearances_blocks_interceptions INTEGER,
+                    defensive_contribution INTEGER,
+                    recoveries INTEGER,
+                    tackles INTEGER,
+                    fixture_difficulty INTEGER,
                     FOREIGN KEY(player_id) REFERENCES players(id)
                 )''')
-    conn.commit()
-    conn.close()
+    c.execute('''CREATE TABLE IF NOT EXISTS fixtures (
+                    id INTEGER PRIMARY KEY,
+                    code INTEGER,
+                    event INTEGER,
+                    finished BOOLEAN,
+                    finished_provisional BOOLEAN,
+                    kickoff_time TEXT,
+                    minutes INTEGER,
+                    provisional_start_time TEXT,
+                    started BOOLEAN,
+                    team_a INTEGER,
+                    team_a_score INTEGER,
+                    team_h INTEGER,
+                    team_h_score INTEGER,
+                    team_h_difficulty INTEGER,
+                    team_a_difficulty INTEGER,
+                    pulse_id INTEGER,
+                    season TEXT
+                )''')
 
 def fetch_and_store_data():
     response = requests.get(API_URL)
@@ -275,11 +355,13 @@ def get_players():
                         p.now_cost,
                         p.total_points,
                         p.form,
-                        GROUP_CONCAT(ph.total_points ORDER BY ph.round DESC) as last_5_points
+                        p.pred_match1,
+                        p.pred_match2,
+                        p.pred_match3,
+                        p.total_pred,
+                        p.pred_per_mil
                  FROM players p
                  JOIN teams t ON p.team = t.id
-                 LEFT JOIN player_history ph ON p.id = ph.player_id
-                 GROUP BY p.id
                  ORDER BY p.web_name''')
     players_data = c.fetchall()
     
@@ -291,19 +373,6 @@ def get_players():
     players = []
     for row in players_data:
         player_dict = dict(zip(column_names, row))
-        # Process last_5_points
-        last_points_str = player_dict.pop('last_5_points', '')
-        if last_points_str:
-            points_list = last_points_str.split(',')
-            for i in range(5):
-                key = f'points_{i+1}'
-                if i < len(points_list):
-                    player_dict[key] = int(points_list[i])
-                else:
-                    player_dict[key] = None
-        else:
-            for i in range(5):
-                player_dict[f'points_{i+1}'] = None
         players.append(player_dict)
     
     return players
@@ -348,3 +417,69 @@ def get_player_history(player_id):
         history.append(history_dict)
     
     return history
+def update_player_predictions():
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Get all players
+    c.execute('SELECT id, now_cost FROM players')
+    players = c.fetchall()
+    for player_id, now_cost in players:
+        logger.info(f"Processing player ID: {player_id}")
+        # Get player history: difficulty and points
+        c.execute('SELECT fixture_difficulty, total_points FROM player_history WHERE player_id = ? AND fixture_difficulty IS NOT NULL AND total_points IS NOT NULL', (player_id,))
+        history = c.fetchall()
+        logger.info(f"Player {player_id}: Found {len(history)} historical matches with valid data")
+        
+        if len(history) < 2:
+            logger.warning(f"Player {player_id}: Not enough data to fit model (only {len(history)} matches)")
+            pred_points = [None, None, None]
+            total_pred = None
+            pred_per_mil = None
+        else:
+            # Check for nulls (though query already filters)
+            difficulties = [h[0] for h in history]
+            points = [h[1] for h in history]
+            if None in difficulties or None in points:
+                raise ValueError(f"Player {player_id}: Null values found in history data")
+            
+            X = np.array(difficulties).reshape(-1, 1)
+            y = np.array(points)
+            model = LinearRegression()
+            model.fit(X, y)
+            logger.info(f"Player {player_id}: Model fitted with slope {model.coef_[0]:.4f}, intercept {model.intercept_:.4f}")
+            
+            # Get next 3 fixture difficulties
+            c.execute('SELECT fixture_difficulty FROM player_history WHERE player_id = ? AND total_points IS NULL ORDER BY round ASC LIMIT 3', (player_id,))
+            next_diffs = [row[0] for row in c.fetchall()]
+            logger.info(f"Player {player_id}: Next difficulties: {next_diffs}")
+            
+            # If not enough future fixtures, pad with mean difficulty
+            if len(next_diffs) < 3:
+                mean_diff = int(np.mean(X)) if len(X) > 0 else 3
+                next_diffs += [mean_diff] * (3 - len(next_diffs))
+                logger.warning(f"Player {player_id}: Padded with mean difficulty {mean_diff}")
+            
+            pred_points = [round(float(model.predict(np.array([[d]]))[0]), 1) for d in next_diffs]
+            logger.info(f"Player {player_id}: Predicted points: {pred_points}")
+            
+            # Check if all predictions are the same, but only if not all difficulties are the same (padded)
+            if len(set(pred_points)) == 1 and len(set(next_diffs)) > 1:
+                logger.error(f"Player {player_id}: All predictions are identical ({pred_points[0]}). Possible issue with model or data.")
+                raise ValueError(f"Player {player_id}: Identical predictions detected")
+            elif len(set(pred_points)) == 1:
+                logger.warning(f"Player {player_id}: All predictions are identical due to same difficulties (padded).")
+            
+            total_pred = round(sum(pred_points), 1)
+            pred_per_mil = round(total_pred / (now_cost / 10), 1) if now_cost and now_cost > 0 else None
+            logger.info(f"Player {player_id}: Total pred: {total_pred}, Pred per mil: {pred_per_mil}")
+        
+        # Update player row
+        c.execute('''UPDATE players SET pred_match1 = ?, pred_match2 = ?, pred_match3 = ?, total_pred = ?, pred_per_mil = ? WHERE id = ?''',
+                  (pred_points[0], pred_points[1], pred_points[2], total_pred, pred_per_mil, player_id))
+    conn.commit()
+    conn.close()
+    logger.info("All players processed successfully")

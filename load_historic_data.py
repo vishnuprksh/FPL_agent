@@ -4,7 +4,7 @@ import requests
 
 DB_PATH = 'fpl_data.db'
 
-def load_historic_data(season='2025-26'):
+def load_historic_data(season='2024-25'):
     all_data = []
     for gw in range(1, 39):  # GW1 to GW38
         url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"

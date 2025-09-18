@@ -21,7 +21,26 @@ def load_fixture_data(season='2025-26'):
                 'away_difficulty': int(row['team_a_difficulty'])
             }
 
-        print(f"Processed {len(fixture_difficulty)} fixtures for {season}")
+        # Insert fixtures
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        for _, row in df.iterrows():
+            c.execute('''INSERT OR REPLACE INTO fixtures (
+                            id, code, event, finished, finished_provisional, kickoff_time,
+                            minutes, provisional_start_time, started, team_a, team_a_score,
+                            team_h, team_h_score, team_h_difficulty, team_a_difficulty, pulse_id, season
+                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                      (int(row['id']), int(row.get('code', 0)), int(row.get('event', 0)),
+                       bool(row.get('finished', False)), bool(row.get('finished_provisional', False)),
+                       str(row.get('kickoff_time', '')), int(row.get('minutes', 0)),
+                       str(row.get('provisional_start_time', '')), bool(row.get('started', False)),
+                       int(row.get('team_a', 0)), int(row.get('team_a_score', 0)),
+                       int(row.get('team_h', 0)), int(row.get('team_h_score', 0)),
+                       int(row.get('team_h_difficulty', 0)), int(row.get('team_a_difficulty', 0)),
+                       int(row.get('pulse_id', 0)), season))
+        conn.commit()
+        conn.close()
+        print(f"Inserted {len(df)} fixtures for {season}")
 
         # Update player_history table
         conn = sqlite3.connect(DB_PATH)
