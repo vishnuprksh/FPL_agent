@@ -40,7 +40,7 @@ def init_db():
                     clean_sheets INTEGER,
                     clean_sheets_per_90 TEXT,
                     clearances_blocks_interceptions INTEGER,
-                    code INTEGER,
+                    code INTEGER UNIQUE,
                     corners_and_indirect_freekicks_order INTEGER,
                     corners_and_indirect_freekicks_text TEXT,
                     cost_change_event INTEGER,
@@ -131,29 +131,9 @@ def init_db():
                     web_name TEXT,
                     yellow_cards INTEGER
                 )''')
-    # Add prediction columns if not exist
-    try:
-        c.execute('ALTER TABLE players ADD COLUMN pred_match1 REAL')
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute('ALTER TABLE players ADD COLUMN pred_match2 REAL')
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute('ALTER TABLE players ADD COLUMN pred_match3 REAL')
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute('ALTER TABLE players ADD COLUMN total_pred REAL')
-    except sqlite3.OperationalError:
-        pass
-    try:
-        c.execute('ALTER TABLE players ADD COLUMN pred_per_mil REAL')
-    except sqlite3.OperationalError:
-        pass
     c.execute('''CREATE TABLE IF NOT EXISTS player_history (
                     player_id INTEGER,
+                    code INTEGER,
                     round INTEGER,
                     total_points INTEGER,
                     opponent_team INTEGER,
@@ -218,6 +198,15 @@ def init_db():
                     pulse_id INTEGER,
                     season TEXT,
                     PRIMARY KEY (id, season)
+                )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS player_calculated_features (
+                    code INTEGER,
+                    pred_match1 REAL,
+                    pred_match2 REAL,
+                    pred_match3 REAL,
+                    total_pred REAL,
+                    pred_per_mil REAL,
+                    FOREIGN KEY(code) REFERENCES players(code)
                 )''')
     conn.commit()
     conn.close()

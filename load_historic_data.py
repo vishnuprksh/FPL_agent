@@ -23,6 +23,16 @@ def load_historic_data(season='2024-25', if_exists='replace'):
         print(f"Total records for {season}: {len(combined_df)}")
         print("Columns:", combined_df.columns.tolist())
 
+        # Load players_raw.csv to get id to code mapping
+        players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
+        try:
+            players_df = pd.read_csv(players_url)
+            id_to_code = dict(zip(players_df['id'], players_df['code']))
+            print(f"Loaded player mapping for {season}: {len(id_to_code)} players")
+        except Exception as e:
+            print(f"Error loading players_raw.csv for {season}: {e}")
+            id_to_code = {}
+
         # Add missing columns with defaults
         optional_cols = {
             'fixture': 0,
@@ -97,6 +107,9 @@ def load_historic_data(season='2024-25', if_exists='replace'):
         }
         combined_df = combined_df.astype(dtype_map)
         combined_df.rename(columns={'element': 'player_id'}, inplace=True)
+
+        # Add code column using the mapping
+        combined_df['code'] = combined_df['player_id'].map(id_to_code).fillna(0).astype('int64')
 
         # Analyze features
         print("\nData types:")
