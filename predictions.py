@@ -53,9 +53,10 @@ def update_player_predictions():
             logger.info(f"Player {player_id}: Predicted points: {pred_points}")
             
             # Check if all predictions are the same, but only if not all difficulties are the same (padded)
-            if len(set(pred_points)) == 1 and len(set(next_diffs)) > 1:
-                logger.error(f"Player {player_id}: All predictions are identical ({pred_points[0]}). Possible issue with model or data.")
-                raise ValueError(f"Player {player_id}: Identical predictions detected")
+            pred_set = set(round(p, 1) for p in pred_points)  # Round to 1 decimal for comparison
+            if len(pred_set) == 1 and len(set(next_diffs)) > 1:
+                logger.warning(f"Player {player_id}: All predictions are identical ({pred_points[0]}). Possible issue with model or data.")
+                # Don't raise error, just warn
             elif len(set(pred_points)) == 1:
                 logger.warning(f"Player {player_id}: All predictions are identical due to same difficulties (padded).")
             

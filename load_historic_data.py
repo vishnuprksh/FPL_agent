@@ -4,7 +4,7 @@ import requests
 
 DB_PATH = 'fpl_data.db'
 
-def load_historic_data(season='2024-25'):
+def load_historic_data(season='2024-25', if_exists='replace'):
     all_data = []
     for gw in range(1, 39):  # GW1 to GW38
         url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"
@@ -23,6 +23,81 @@ def load_historic_data(season='2024-25'):
         print(f"Total records for {season}: {len(combined_df)}")
         print("Columns:", combined_df.columns.tolist())
 
+        # Add missing columns with defaults
+        optional_cols = {
+            'fixture': 0,
+            'xP': 0.0,
+            'expected_assists': 0.0,
+            'expected_goal_involvements': 0.0,
+            'expected_goals': 0.0,
+            'expected_goals_conceded': 0.0,
+            'kickoff_time': '',
+            'modified': False,
+            'selected': 0,
+            'starts': 0,
+            'team_a_score': 0,
+            'team_h_score': 0,
+            'transfers_balance': 0,
+            'transfers_in': 0,
+            'transfers_out': 0,
+            'clearances_blocks_interceptions': 0,
+            'defensive_contribution': 0,
+            'recoveries': 0,
+            'tackles': 0
+        }
+        for col, default in optional_cols.items():
+            if col not in combined_df.columns:
+                combined_df[col] = default
+
+        # Set data types
+        dtype_map = {
+            'element': 'int64',  # player_id
+            'round': 'int64',
+            'total_points': 'int64',
+            'opponent_team': 'int64',
+            'season': 'object',
+            'assists': 'int64',
+            'bonus': 'int64',
+            'bps': 'int64',
+            'clean_sheets': 'int64',
+            'creativity': 'float64',
+            'goals_conceded': 'int64',
+            'goals_scored': 'int64',
+            'ict_index': 'float64',
+            'influence': 'float64',
+            'minutes': 'int64',
+            'own_goals': 'int64',
+            'penalties_missed': 'int64',
+            'penalties_saved': 'int64',
+            'red_cards': 'int64',
+            'saves': 'int64',
+            'threat': 'float64',
+            'value': 'int64',
+            'was_home': 'bool',
+            'yellow_cards': 'int64',
+            'fixture': 'int64',
+            'xP': 'float64',
+            'expected_assists': 'float64',
+            'expected_goal_involvements': 'float64',
+            'expected_goals': 'float64',
+            'expected_goals_conceded': 'float64',
+            'kickoff_time': 'object',
+            'modified': 'bool',
+            'selected': 'int64',
+            'starts': 'int64',
+            'team_a_score': 'int64',
+            'team_h_score': 'int64',
+            'transfers_balance': 'int64',
+            'transfers_in': 'int64',
+            'transfers_out': 'int64',
+            'clearances_blocks_interceptions': 'int64',
+            'defensive_contribution': 'int64',
+            'recoveries': 'int64',
+            'tackles': 'int64'
+        }
+        combined_df = combined_df.astype(dtype_map)
+        combined_df.rename(columns={'element': 'player_id'}, inplace=True)
+
         # Analyze features
         print("\nData types:")
         print(combined_df.dtypes)
@@ -30,90 +105,21 @@ def load_historic_data(season='2024-25'):
         print("\nSample data:")
         print(combined_df.head())
 
-        # Now insert/update into database
+        # Recreate table and insert data
         conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        updated = 0
-        for _, row in combined_df.iterrows():
-            player_id = int(row['element'])
-            round_num = int(row['round'])
-            season_val = row['season']
-
-            # Check if record already exists for this player, round, and season
-            c.execute('SELECT COUNT(*) FROM player_history WHERE player_id = ? AND round = ? AND season = ?',
-                      (player_id, round_num, season_val))
-            exists = c.fetchone()[0]
-
-            if exists == 0:
-                # Insert new record
-                c.execute('''INSERT INTO player_history (
-                                player_id, round, total_points, opponent_team, season,
-                                assists, bonus, bps, clean_sheets, creativity, goals_conceded,
-                                goals_scored, ict_index, influence, minutes, own_goals,
-                                penalties_missed, penalties_saved, red_cards, saves, threat,
-                                value, was_home, yellow_cards, fixture, xP, expected_assists,
-                                expected_goal_involvements, expected_goals, expected_goals_conceded,
-                                kickoff_time, modified, selected, starts, team_a_score, team_h_score,
-                                transfers_balance, transfers_in, transfers_out, clearances_blocks_interceptions,
-                                defensive_contribution, recoveries, tackles
-                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                          (player_id, round_num, int(row['total_points']), int(row['opponent_team']), season_val,
-                           int(row['assists']), int(row['bonus']), int(row['bps']), int(row['clean_sheets']),
-                           float(row['creativity']), int(row['goals_conceded']), int(row['goals_scored']),
-                           float(row['ict_index']), float(row['influence']), int(row['minutes']),
-                           int(row['own_goals']), int(row['penalties_missed']), int(row['penalties_saved']),
-                           int(row['red_cards']), int(row['saves']), float(row['threat']),
-                           int(row['value']), bool(row['was_home']), int(row['yellow_cards']),
-                           int(row.get('fixture', 0)), float(row.get('xP', 0.0)), float(row.get('expected_assists', 0.0)),
-                           float(row.get('expected_goal_involvements', 0.0)), float(row.get('expected_goals', 0.0)),
-                           float(row.get('expected_goals_conceded', 0.0)), str(row.get('kickoff_time', '')),
-                           bool(row.get('modified', False)), int(row.get('selected', 0)), int(row.get('starts', 0)),
-                           int(row.get('team_a_score', 0)), int(row.get('team_h_score', 0)),
-                           int(row.get('transfers_balance', 0)), int(row.get('transfers_in', 0)),
-                           int(row.get('transfers_out', 0)), int(row.get('clearances_blocks_interceptions', 0)),
-                           int(row.get('defensive_contribution', 0)), int(row.get('recoveries', 0)),
-                           int(row.get('tackles', 0))))
-                updated += 1
-            else:
-                # Update existing record
-                c.execute('''UPDATE player_history SET
-                                total_points = ?, opponent_team = ?,
-                                assists = ?, bonus = ?, bps = ?, clean_sheets = ?, creativity = ?,
-                                goals_conceded = ?, goals_scored = ?, ict_index = ?, influence = ?,
-                                minutes = ?, own_goals = ?, penalties_missed = ?, penalties_saved = ?,
-                                red_cards = ?, saves = ?, threat = ?, value = ?, was_home = ?, yellow_cards = ?,
-                                fixture = ?, xP = ?, expected_assists = ?, expected_goal_involvements = ?,
-                                expected_goals = ?, expected_goals_conceded = ?, kickoff_time = ?, modified = ?,
-                                selected = ?, starts = ?, team_a_score = ?, team_h_score = ?, transfers_balance = ?,
-                                transfers_in = ?, transfers_out = ?, clearances_blocks_interceptions = ?,
-                                defensive_contribution = ?, recoveries = ?, tackles = ?
-                             WHERE player_id = ? AND round = ? AND season = ?''',
-                          (int(row['total_points']), int(row['opponent_team']),
-                           int(row['assists']), int(row['bonus']), int(row['bps']), int(row['clean_sheets']),
-                           float(row['creativity']), int(row['goals_conceded']), int(row['goals_scored']),
-                           float(row['ict_index']), float(row['influence']), int(row['minutes']),
-                           int(row['own_goals']), int(row['penalties_missed']), int(row['penalties_saved']),
-                           int(row['red_cards']), int(row['saves']), float(row['threat']),
-                           int(row['value']), bool(row['was_home']), int(row['yellow_cards']),
-                           int(row.get('fixture', 0)), float(row.get('xP', 0.0)), float(row.get('expected_assists', 0.0)),
-                           float(row.get('expected_goal_involvements', 0.0)), float(row.get('expected_goals', 0.0)),
-                           float(row.get('expected_goals_conceded', 0.0)), str(row.get('kickoff_time', '')),
-                           bool(row.get('modified', False)), int(row.get('selected', 0)), int(row.get('starts', 0)),
-                           int(row.get('team_a_score', 0)), int(row.get('team_h_score', 0)),
-                           int(row.get('transfers_balance', 0)), int(row.get('transfers_in', 0)),
-                           int(row.get('transfers_out', 0)), int(row.get('clearances_blocks_interceptions', 0)),
-                           int(row.get('defensive_contribution', 0)), int(row.get('recoveries', 0)),
-                           int(row.get('tackles', 0)),
-                           player_id, round_num, season_val))
-                updated += 1
-
+        combined_df.to_sql('player_history', conn, if_exists=if_exists, index=False)
         conn.commit()
         conn.close()
-        print(f"Processed {updated} records for {season}")
+        print(f"Inserted {len(combined_df)} records for {season}")
 
 if __name__ == "__main__":
     import sys
     season = sys.argv[1] if len(sys.argv) > 1 else '2025-26'
-    print(f"Loading data for season: {season}")
-    load_historic_data(season)
+    if season == 'both':
+        print("Loading data for season: 2024-25")
+        load_historic_data('2024-25', 'replace')
+        print("Loading data for season: 2025-26")
+        load_historic_data('2025-26', 'append')
+    else:
+        print(f"Loading data for season: {season}")
+        load_historic_data(season, 'replace')

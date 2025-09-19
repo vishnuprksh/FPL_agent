@@ -30,14 +30,23 @@ def load_fixture_data(season='2025-26'):
                             minutes, provisional_start_time, started, team_a, team_a_score,
                             team_h, team_h_score, team_h_difficulty, team_a_difficulty, pulse_id, season
                          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (int(row['id']), int(row.get('code', 0)), int(row.get('event', 0)),
-                       bool(row.get('finished', False)), bool(row.get('finished_provisional', False)),
-                       str(row.get('kickoff_time', '')), int(row.get('minutes', 0)),
-                       str(row.get('provisional_start_time', '')), bool(row.get('started', False)),
-                       int(row.get('team_a', 0)), int(row.get('team_a_score', 0)),
-                       int(row.get('team_h', 0)), int(row.get('team_h_score', 0)),
-                       int(row.get('team_h_difficulty', 0)), int(row.get('team_a_difficulty', 0)),
-                       int(row.get('pulse_id', 0)), season))
+                      (int(row['id']), 
+                       int(row['code']) if not pd.isna(row['code']) else 0,
+                       int(row['event']) if not pd.isna(row['event']) else 0,
+                       bool(row['finished']) if not pd.isna(row['finished']) else False,
+                       bool(row['finished_provisional']) if not pd.isna(row['finished_provisional']) else False,
+                       str(row['kickoff_time']) if not pd.isna(row['kickoff_time']) else '',
+                       int(row['minutes']) if not pd.isna(row['minutes']) else 0,
+                       str(row['provisional_start_time']) if not pd.isna(row['provisional_start_time']) else '',
+                       bool(row['started']) if not pd.isna(row['started']) else False,
+                       int(row['team_a']) if not pd.isna(row['team_a']) else 0,
+                       int(row['team_a_score']) if not pd.isna(row['team_a_score']) else 0,
+                       int(row['team_h']) if not pd.isna(row['team_h']) else 0,
+                       int(row['team_h_score']) if not pd.isna(row['team_h_score']) else 0,
+                       int(row['team_h_difficulty']) if not pd.isna(row['team_h_difficulty']) else 0,
+                       int(row['team_a_difficulty']) if not pd.isna(row['team_a_difficulty']) else 0,
+                       int(row['pulse_id']) if not pd.isna(row['pulse_id']) else 0,
+                       season))
         conn.commit()
         conn.close()
         print(f"Inserted {len(df)} fixtures for {season}")
@@ -65,6 +74,40 @@ def load_fixture_data(season='2025-26'):
         conn.commit()
         conn.close()
         print(f"Updated {updated} player_history records for {season} with fixture difficulty")
+
+        # Insert future fixtures into player_history
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # Get unfinished fixtures
+        c.execute('SELECT id, event, team_h, team_a, team_h_difficulty, team_a_difficulty FROM fixtures WHERE finished = 0 AND season = ?', (season,))
+        future_fixtures = c.fetchall()
+        
+        inserted = 0
+        for fixture_id, event, team_h, team_a, h_diff, a_diff in future_fixtures:
+            # Insert home team players
+            c.execute('SELECT id FROM players WHERE team = ?', (team_h,))
+            home_players = [row[0] for row in c.fetchall()]
+            for player_id in home_players:
+                c.execute('''INSERT OR IGNORE INTO player_history (
+                                player_id, round, total_points, opponent_team, season, fixture, was_home, fixture_difficulty
+                             ) VALUES (?, ?, NULL, ?, ?, ?, 1, ?)''',
+                          (player_id, event, team_a, season, fixture_id, h_diff))
+                inserted += c.rowcount
+            
+            # Insert away team players
+            c.execute('SELECT id FROM players WHERE team = ?', (team_a,))
+            away_players = [row[0] for row in c.fetchall()]
+            for player_id in away_players:
+                c.execute('''INSERT OR IGNORE INTO player_history (
+                                player_id, round, total_points, opponent_team, season, fixture, was_home, fixture_difficulty
+                             ) VALUES (?, ?, NULL, ?, ?, ?, 0, ?)''',
+                          (player_id, event, team_h, season, fixture_id, a_diff))
+                inserted += c.rowcount
+        
+        conn.commit()
+        conn.close()
+        print(f"Inserted {inserted} future player_history records for {season}")
 
     except Exception as e:
         print(f"Error loading {season} fixtures: {e}")

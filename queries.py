@@ -80,3 +80,42 @@ def get_player_history(player_id):
         history.append(history_dict)
     
     return history
+
+def get_null_percentages():
+    """Retrieve null value percentages for all tables and columns."""
+    conn = get_connection()
+    c = conn.cursor()
+    
+    # Get all table names
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    tables = [row[0] for row in c.fetchall()]
+    
+    null_data = []
+    
+    for table in tables:
+        # Get column info
+        c.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in c.fetchall()]  # column names
+        
+        # Get total rows
+        c.execute(f"SELECT COUNT(*) FROM {table}")
+        total_rows = c.fetchone()[0]
+        
+        if total_rows == 0:
+            continue
+        
+        for column in columns:
+            # Count nulls
+            c.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} IS NULL")
+            null_count = c.fetchone()[0]
+            percentage = (null_count / total_rows) * 100 if total_rows > 0 else 0
+            null_data.append({
+                'table': table,
+                'column': column,
+                'total_rows': total_rows,
+                'null_count': null_count,
+                'percentage': round(percentage, 2)
+            })
+    
+    conn.close()
+    return null_data

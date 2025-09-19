@@ -1,5 +1,5 @@
 from flask import render_template
-from queries import get_players, get_teams, get_player_history
+from queries import get_players, get_teams, get_player_history, get_null_percentages
 
 def home():
     return render_template('home.html')
@@ -19,3 +19,7 @@ def player_history(player_id):
     player_name = history[0]['web_name'] if history else f"Player {player_id}"
     all_keys = list(history[0].keys()) if history else []
     return render_template('player_history.html', history=history, player_name=player_name, all_keys=all_keys)
+
+def null_values():
+    null_data = get_null_percentages()
+    return render_template('null_values.html', null_data=null_data)

@@ -1,7 +1,7 @@
 from flask import Flask
 from models import init_db
 from data_storage import fetch_and_store_data
-from routes import home, players, teams, player_history
+from routes import home, players, teams, player_history, null_values
 import sys
 
 app = Flask(__name__)
@@ -26,6 +26,10 @@ def teams_route():
 @app.route('/player/<int:player_id>/history')
 def player_history_route(player_id):
     return player_history(player_id)
+
+@app.route('/null-values')
+def null_values_route():
+    return null_values()
 
 if __name__ == '__main__':
     app.run(debug=True)

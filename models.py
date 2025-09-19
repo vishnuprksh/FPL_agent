@@ -200,7 +200,7 @@ def init_db():
                     FOREIGN KEY(player_id) REFERENCES players(id)
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS fixtures (
-                    id INTEGER PRIMARY KEY,
+                    id INTEGER,
                     code INTEGER,
                     event INTEGER,
                     finished BOOLEAN,
@@ -216,7 +216,8 @@ def init_db():
                     team_h_difficulty INTEGER,
                     team_a_difficulty INTEGER,
                     pulse_id INTEGER,
-                    season TEXT
+                    season TEXT,
+                    PRIMARY KEY (id, season)
                 )''')
     conn.commit()
     conn.close()
