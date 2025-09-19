@@ -1,7 +1,7 @@
 from flask import Flask
-from models import init_db
-from data_storage import fetch_and_store_data
-from routes import home, players, teams, player_history, null_values
+from src.models import init_db
+from src.data_storage import fetch_and_store_data
+from src.routes import home, players, teams, player_history, null_values
 import sys
 
 app = Flask(__name__)

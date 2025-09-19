@@ -1,7 +1,7 @@
 import pandas as pd
 import sqlite3
 
-DB_PATH = 'fpl_data.db'
+DB_PATH = '../data/fpl_data.db'
 
 def load_fixture_data(season='2025-26'):
     """Load fixture data and update player_history with fixture difficulty"""

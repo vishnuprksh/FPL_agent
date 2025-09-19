@@ -5,7 +5,7 @@ Test script to verify that the player code 223094 belongs to Erling Haaland.
 
 import sqlite3
 
-DB_PATH = 'fpl_data.db'
+DB_PATH = '../data/fpl_data.db'
 
 def test_haaland_code():
     """Test that code 223094 is for Haaland."""

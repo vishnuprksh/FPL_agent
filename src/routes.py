@@ -1,5 +1,5 @@
 from flask import render_template, request
-from queries import get_players, get_teams, get_player_history, get_null_percentages, get_player_columns
+from src.queries import get_players, get_teams, get_player_history, get_null_percentages, get_player_columns
 
 def home():
     return render_template('home.html')

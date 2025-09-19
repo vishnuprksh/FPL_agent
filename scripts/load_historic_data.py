@@ -2,7 +2,7 @@ import pandas as pd
 import sqlite3
 import requests
 
-DB_PATH = 'fpl_data.db'
+DB_PATH = '../data/fpl_data.db'
 
 def load_historic_data(season='2024-25', if_exists='replace'):
     all_data = []

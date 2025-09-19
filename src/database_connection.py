@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_PATH = 'fpl_data.db'
+DB_PATH = 'data/fpl_data.db'
 
 def get_connection():
     """Get a database connection."""

@@ -1,7 +1,7 @@
 import logging
 from sklearn.linear_model import LinearRegression
 import numpy as np
-from database_connection import get_connection
+from src.database_connection import get_connection
 
 def update_player_predictions():
     """Update player predictions using linear regression on historical data."""

@@ -1,5 +1,5 @@
-from database_connection import get_connection
-from data_fetcher import fetch_bootstrap_data, fetch_player_history
+from src.database_connection import get_connection
+from src.data_fetcher import fetch_bootstrap_data, fetch_player_history
 
 def clear_tables(conn):
     """Clear existing data from tables."""

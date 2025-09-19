@@ -1,4 +1,4 @@
-from database_connection import get_connection
+from src.database_connection import get_connection
 
 def get_player_columns():
     """Get all column names from players table."""
