@@ -1,13 +1,17 @@
-from flask import render_template
-from queries import get_players, get_teams, get_player_history, get_null_percentages
+from flask import render_template, request
+from queries import get_players, get_teams, get_player_history, get_null_percentages, get_player_columns
 
 def home():
     return render_template('home.html')
 
 def players():
-    players = get_players()
-    all_keys = list(players[0].keys()) if players else []
-    return render_template('players.html', players=players, all_keys=all_keys)
+    columns = request.args.get('columns')
+    if columns:
+        columns = columns.split(',')
+    players = get_players(columns)
+    all_keys = get_player_columns() + ['position', 'team_name']
+    selected_columns = columns if columns else ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form', 'pred_match1', 'pred_match2', 'pred_match3', 'total_pred', 'pred_per_mil']
+    return render_template('players.html', players=players, all_keys=all_keys, selected_columns=selected_columns)
 
 def teams():
     teams_list = get_teams()

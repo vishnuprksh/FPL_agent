@@ -1,29 +1,38 @@
 from database_connection import get_connection
 
-def get_players():
-    """Retrieve all players with team information."""
+def get_player_columns():
+    """Get all column names from players table."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute('''SELECT p.id,
-                        p.web_name,
-                        CASE p.element_type
-                            WHEN 1 THEN 'GK'
-                            WHEN 2 THEN 'DEF'
-                            WHEN 3 THEN 'MID'
-                            WHEN 4 THEN 'FWD'
-                        END as position,
-                        t.name as team_name,
-                        p.now_cost,
-                        p.total_points,
-                        p.form,
-                        p.pred_match1,
-                        p.pred_match2,
-                        p.pred_match3,
-                        p.total_pred,
-                        p.pred_per_mil
-                 FROM players p
-                 JOIN teams t ON p.team = t.id
-                 ORDER BY p.web_name''')
+    c.execute("PRAGMA table_info(players)")
+    columns = [row[1] for row in c.fetchall()]
+    conn.close()
+    return columns
+
+def get_players(columns=None):
+    """Retrieve players with selected columns."""
+    all_columns = get_player_columns() + ['position', 'team_name']
+    if columns is None:
+        columns = ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form', 'pred_match1', 'pred_match2', 'pred_match3', 'total_pred', 'pred_per_mil']
+    else:
+        columns = [col for col in columns if col in all_columns]
+        if not columns:
+            columns = ['id', 'web_name']
+    
+    select_columns = []
+    for col in columns:
+        if col == 'position':
+            select_columns.append("CASE p.element_type WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF' WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD' END as position")
+        elif col == 'team_name':
+            select_columns.append("t.name as team_name")
+        else:
+            select_columns.append(f"p.{col}")
+    
+    query = f"SELECT {', '.join(select_columns)} FROM players p JOIN teams t ON p.team = t.id ORDER BY p.web_name"
+    
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(query)
     players_data = c.fetchall()
     
     # Get column names
