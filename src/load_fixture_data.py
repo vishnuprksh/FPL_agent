@@ -1,7 +1,11 @@
 import pandas as pd
 import sqlite3
+import os
+import argparse
 
-DB_PATH = '../data/fpl_data.db'
+# Get the directory of the current script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, '..', 'data', 'fpl_data.db')
 
 def load_fixture_data(season='2025-26'):
     """Load fixture data and update player_history with fixture difficulty"""
@@ -112,13 +116,17 @@ def load_fixture_data(season='2025-26'):
     except Exception as e:
         print(f"Error loading {season} fixtures: {e}")
 
-if __name__ == "__main__":
-    import sys
-    season = sys.argv[1] if len(sys.argv) > 1 else '2025-26'
-    print(f"Loading fixture data for season: {season}")
-    load_fixture_data(season)
+def main():
+    parser = argparse.ArgumentParser(description='Load FPL fixture data')
+    parser.add_argument('--seasons', type=str, nargs='+', 
+                       default=['2025-26', '2024-25'],
+                       help='Seasons to load fixture data for (default: 2025-26 2024-25)')
+    
+    args = parser.parse_args()
+    
+    for season in args.seasons:
+        print(f"Loading fixture data for season: {season}")
+        load_fixture_data(season)
 
-    # Also update the other season
-    other_season = '2024-25' if season == '2025-26' else '2025-26'
-    print(f"Loading fixture data for season: {other_season}")
-    load_fixture_data(other_season)
+if __name__ == "__main__":
+    main()
