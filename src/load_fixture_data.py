@@ -2,33 +2,42 @@ import pandas as pd
 import sqlite3
 import os
 import argparse
+import requests
 
 # Get the directory of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, '..', 'data', 'fpl_data.db')
 
 def load_fixture_data(season='2025-26'):
-    """Load fixture data and update player_history with fixture difficulty"""
-    url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/fixtures.csv"
+    """Load fixture data and store in database"""
+    
+    if season == '2025-26':
+        # Use FPL API for current season
+        fixtures_url = "https://fantasy.premierleague.com/api/fixtures/"
+        try:
+            response = requests.get(fixtures_url).json()
+            df = pd.DataFrame(response)
+            print(f"Loaded {season} fixtures from API: {len(df)} records")
+        except Exception as e:
+            print(f"Error loading fixtures from API for {season}: {e}")
+            return
+    else:
+        # Use GitHub CSV for previous seasons
+        url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/fixtures.csv"
+        try:
+            df = pd.read_csv(url)
+            print(f"Loaded {season} fixtures from CSV: {len(df)} records")
+        except Exception as e:
+            print(f"Error loading fixtures CSV for {season}: {e}")
+            return
 
-    try:
-        df = pd.read_csv(url)
-        print(f"Loaded {season} fixtures: {len(df)} records")
-        print("Columns:", df.columns.tolist())
-
-        # Create a dictionary mapping fixture_id to difficulty for home and away
-        fixture_difficulty = {}
-        for _, row in df.iterrows():
-            fixture_id = int(row['id'])
-            fixture_difficulty[fixture_id] = {
-                'home_difficulty': int(row['team_h_difficulty']),
-                'away_difficulty': int(row['team_a_difficulty'])
-            }
-
-        # Insert fixtures
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        for _, row in df.iterrows():
+    # Insert fixtures into database
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    inserted = 0
+    for _, row in df.iterrows():
+        try:
             c.execute('''INSERT OR REPLACE INTO fixtures (
                             id, code, event, finished, finished_provisional, kickoff_time,
                             minutes, provisional_start_time, started, team_a, team_a_score,
@@ -51,70 +60,13 @@ def load_fixture_data(season='2025-26'):
                        int(row['team_a_difficulty']) if not pd.isna(row['team_a_difficulty']) else 0,
                        int(row['pulse_id']) if not pd.isna(row['pulse_id']) else 0,
                        season))
-        conn.commit()
-        conn.close()
-        print(f"Inserted {len(df)} fixtures for {season}")
-
-        # Update player_history table
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-
-        updated = 0
-        for fixture_id, difficulties in fixture_difficulty.items():
-            # Update home team players (was_home = 1)
-            c.execute('''UPDATE player_history
-                         SET fixture_difficulty = ?
-                         WHERE fixture = ? AND was_home = 1 AND season = ?''',
-                      (difficulties['home_difficulty'], fixture_id, season))
-
-            # Update away team players (was_home = 0)
-            c.execute('''UPDATE player_history
-                         SET fixture_difficulty = ?
-                         WHERE fixture = ? AND was_home = 0 AND season = ?''',
-                      (difficulties['away_difficulty'], fixture_id, season))
-
-            updated += c.rowcount
-
-        conn.commit()
-        conn.close()
-        print(f"Updated {updated} player_history records for {season} with fixture difficulty")
-
-        # Insert future fixtures into player_history
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Get unfinished fixtures
-        c.execute('SELECT id, event, team_h, team_a, team_h_difficulty, team_a_difficulty FROM fixtures WHERE finished = 0 AND season = ?', (season,))
-        future_fixtures = c.fetchall()
-        
-        inserted = 0
-        for fixture_id, event, team_h, team_a, h_diff, a_diff in future_fixtures:
-            # Insert home team players
-            c.execute('SELECT id FROM players WHERE team = ?', (team_h,))
-            home_players = [row[0] for row in c.fetchall()]
-            for player_id in home_players:
-                c.execute('''INSERT OR IGNORE INTO player_history (
-                                player_id, round, total_points, opponent_team, season, fixture, was_home, fixture_difficulty
-                             ) VALUES (?, ?, NULL, ?, ?, ?, 1, ?)''',
-                          (player_id, event, team_a, season, fixture_id, h_diff))
-                inserted += c.rowcount
-            
-            # Insert away team players
-            c.execute('SELECT id FROM players WHERE team = ?', (team_a,))
-            away_players = [row[0] for row in c.fetchall()]
-            for player_id in away_players:
-                c.execute('''INSERT OR IGNORE INTO player_history (
-                                player_id, round, total_points, opponent_team, season, fixture, was_home, fixture_difficulty
-                             ) VALUES (?, ?, NULL, ?, ?, ?, 0, ?)''',
-                          (player_id, event, team_h, season, fixture_id, a_diff))
-                inserted += c.rowcount
-        
-        conn.commit()
-        conn.close()
-        print(f"Inserted {inserted} future player_history records for {season}")
-
-    except Exception as e:
-        print(f"Error loading {season} fixtures: {e}")
+            inserted += 1
+        except Exception as e:
+            print(f"Error inserting fixture {row['id']}: {e}")
+    
+    conn.commit()
+    conn.close()
+    print(f"Inserted {inserted} fixtures for {season}")
 
 def main():
     parser = argparse.ArgumentParser(description='Load FPL fixture data')

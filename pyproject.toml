@@ -13,4 +13,3 @@ dependencies = [
 
 [project.scripts]
 update_db = "load_historic_data:main"
-load_fixtures = "load_fixture_data:main"
