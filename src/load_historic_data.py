@@ -1,27 +1,57 @@
 import pandas as pd
 import sqlite3
 import requests
+import os
 
-DB_PATH = '../data/fpl_data.db'
+# Get the directory of the current script
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, '..', 'data', 'fpl_data.db')
 
-def load_historic_data(season='2024-25', if_exists='replace'):
-    all_data = []
-    for gw in range(1, 39):  # GW1 to GW38
-        url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"
+def load_historic_data(season='2025-26', if_exists='replace'):
+    if season == '2025-26':
+        # Use FPL API for current season
+        bootstrap_url = "https://fantasy.premierleague.com/api/bootstrap-static/"
         try:
-            df = pd.read_csv(url)
-            df['round'] = gw  # Ensure round is set
-            df['season'] = season  # Add season column
-            all_data.append(df)
-            print(f"Loaded {season} GW{gw}: {len(df)} records")
+            response = requests.get(bootstrap_url).json()
+            players_df = pd.DataFrame(response['elements'])
+            id_to_code = dict(zip(players_df['id'], players_df['code']))
+            print(f"Loaded player mapping for {season}: {len(id_to_code)} players")
         except Exception as e:
-            print(f"Error loading {season} GW{gw}: {e}")
-            break
+            print(f"Error loading bootstrap-static for {season}: {e}")
+            id_to_code = {}
 
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        print(f"Total records for {season}: {len(combined_df)}")
-        print("Columns:", combined_df.columns.tolist())
+        all_data = []
+        for gw in range(1, 39):  # GW1 to GW38
+            live_url = f"https://fantasy.premierleague.com/api/event/{gw}/live/"
+            try:
+                response = requests.get(live_url).json()
+                data = []
+                for elem in response['elements']:
+                    row = elem['stats'].copy()
+                    row['element'] = elem['id']
+                    data.append(row)
+                df = pd.DataFrame(data)
+                df['round'] = gw  # Ensure round is set
+                df['season'] = season  # Add season column
+                all_data.append(df)
+                print(f"Loaded {season} GW{gw}: {len(df)} records")
+            except Exception as e:
+                print(f"Error loading {season} GW{gw}: {e}")
+                break
+    else:
+        # Use GitHub CSV for previous seasons
+        all_data = []
+        for gw in range(1, 39):  # GW1 to GW38
+            url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"
+            try:
+                df = pd.read_csv(url)
+                df['round'] = gw  # Ensure round is set
+                df['season'] = season  # Add season column
+                all_data.append(df)
+                print(f"Loaded {season} GW{gw}: {len(df)} records")
+            except Exception as e:
+                print(f"Error loading {season} GW{gw}: {e}")
+                break
 
         # Load players_raw.csv to get id to code mapping
         players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
@@ -32,6 +62,11 @@ def load_historic_data(season='2024-25', if_exists='replace'):
         except Exception as e:
             print(f"Error loading players_raw.csv for {season}: {e}")
             id_to_code = {}
+
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        print(f"Total records for {season}: {len(combined_df)}")
+        print("Columns:", combined_df.columns.tolist())
 
         # Add missing columns with defaults
         optional_cols = {
@@ -53,7 +88,10 @@ def load_historic_data(season='2024-25', if_exists='replace'):
             'clearances_blocks_interceptions': 0,
             'defensive_contribution': 0,
             'recoveries': 0,
-            'tackles': 0
+            'tackles': 0,
+            'opponent_team': 0,
+            'was_home': False,
+            'value': 0
         }
         for col, default in optional_cols.items():
             if col not in combined_df.columns:
@@ -61,7 +99,7 @@ def load_historic_data(season='2024-25', if_exists='replace'):
 
         # Set data types
         dtype_map = {
-            'element': 'int64',  # player_id
+            'player_id': 'int64',  # element
             'round': 'int64',
             'total_points': 'int64',
             'opponent_team': 'int64',
@@ -105,8 +143,9 @@ def load_historic_data(season='2024-25', if_exists='replace'):
             'recoveries': 'int64',
             'tackles': 'int64'
         }
-        combined_df = combined_df.astype(dtype_map)
         combined_df.rename(columns={'element': 'player_id'}, inplace=True)
+        combined_df = combined_df[list(dtype_map.keys())]
+        combined_df = combined_df.astype(dtype_map)
 
         # Add code column using the mapping
         combined_df['code'] = combined_df['player_id'].map(id_to_code).fillna(0).astype('int64')
@@ -125,14 +164,22 @@ def load_historic_data(season='2024-25', if_exists='replace'):
         conn.close()
         print(f"Inserted {len(combined_df)} records for {season}")
 
-if __name__ == "__main__":
-    import sys
-    season = sys.argv[1] if len(sys.argv) > 1 else '2025-26'
-    if season == 'both':
-        print("Loading data for season: 2024-25")
-        load_historic_data('2024-25', 'replace')
-        print("Loading data for season: 2025-26")
-        load_historic_data('2025-26', 'append')
-    else:
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Load FPL historic data')
+    parser.add_argument('--previous_years', type=int, default=1, help='Number of previous seasons to collect (default: 1)')
+
+    args = parser.parse_args()
+
+    # Load current season + N previous seasons
+    seasons = []
+    for i in range(args.previous_years + 1):
+        year = 2025 - i
+        season = f"{year}-{str(year + 1)[-2:]}"
+        seasons.append(season)
+
+    for i, season in enumerate(seasons):
+        if_exists = 'replace' if i == 0 else 'append'
         print(f"Loading data for season: {season}")
-        load_historic_data(season, 'replace')
+        load_historic_data(season, if_exists)

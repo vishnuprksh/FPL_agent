@@ -5,6 +5,7 @@ from src.routes import home, players, teams, player_history, null_values
 import sys
 
 app = Flask(__name__)
+app.template_folder = '/workspaces/FPL_agent/templates'
 
 # Initialize DB on startup
 init_db()
