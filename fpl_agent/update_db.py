@@ -110,6 +110,66 @@ def load_historic_data(season='2025-26', if_exists='replace'):
     print(f"Inserted {players_inserted} players and {history_inserted} player_history rows for {season}")
 
 
+def load_teams_data(season='2025-26', if_exists='replace'):
+    """Load teams data for a given season from the vaastav GitHub CSV and insert into DB."""
+    teams_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/teams.csv"
+    try:
+        df = pd.read_csv(teams_url)
+        print(f"Loaded teams CSV for {season}: {len(df)} rows")
+    except Exception as e:
+        print(f"Error loading teams CSV for {season}: {e}")
+        return 0
+
+    # Normalize column names if necessary (keep as-is; insert_dataframe will pick matching cols)
+    conn = get_connection()
+    c = conn.cursor()
+
+    if if_exists == 'replace':
+        try:
+            c.execute('DELETE FROM teams')
+            conn.commit()
+            print(f"Cleared existing teams rows for season {season}")
+        except Exception:
+            conn.rollback()
+            raise
+
+    # Reuse insert_dataframe defined in load_historic_data by importing local helper.
+    # To avoid duplication, implement a small local helper that mirrors insert_dataframe behavior
+    # but scoped for teams (no need to re-open connection).
+    def insert_df_into_table(df_in: pd.DataFrame, table_name: str) -> int:
+        if df_in is None or df_in.empty:
+            return 0
+
+        c.execute(f"PRAGMA table_info({table_name})")
+        cols_info = c.fetchall()
+        table_cols = [r[1] for r in cols_info]
+
+        common_cols = [col for col in df_in.columns if col in table_cols]
+        if not common_cols:
+            return 0
+
+        cols_sql = ",".join(common_cols)
+        placeholders = ",".join(["?" for _ in common_cols])
+        sql = f"INSERT OR REPLACE INTO {table_name} ({cols_sql}) VALUES ({placeholders})"
+
+        records = df_in[common_cols].where(pd.notnull(df_in[common_cols]), None).values.tolist()
+        try:
+            c.executemany(sql, records)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        return len(records)
+
+    inserted = insert_df_into_table(df, 'teams')
+    conn.close()
+    if inserted == 0:
+        print("No matching team columns to insert into DB")
+    else:
+        print(f"Inserted {inserted} teams for {season}")
+    return inserted
+
 def load_fixture_data(season='2025-26'):
     """Load fixture data and store in database"""
     
@@ -193,6 +253,12 @@ def main():
 
         # Always load both historic and fixture data
         if_exists = 'replace' if season == seasons[0] else 'append'
+        # Load teams first so joins against teams will work
+        try:
+            load_teams_data(season, if_exists)
+        except Exception as e:
+            print(f"Warning: failed to load teams for {season}: {e}")
+
         load_historic_data(season, if_exists)
         load_fixture_data(season)
 

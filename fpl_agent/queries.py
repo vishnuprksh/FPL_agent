@@ -12,13 +12,8 @@ def get_player_columns():
 def get_players(columns=None):
     """Retrieve players with selected columns."""
     # prediction columns removed from schema; only include available columns
-    all_columns = get_player_columns() + ['position', 'team_name']
-    if columns is None:
-        columns = ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
-    else:
-        columns = [col for col in columns if col in all_columns]
-        if not columns:
-            columns = ['id', 'web_name']
+    columns = ['player_code', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
+
     
     select_columns = []
     for col in columns:
@@ -72,11 +67,13 @@ def get_player_history(player_id):
     """Retrieve history for a specific player."""
     conn = get_connection()
     c = conn.cursor()
+    # player_history stores player identifiers in the 'player_code' column
+    # join using players.player_code (stable code across seasons). Also filter by ph.player_code
     c.execute('''SELECT ph.*, p.web_name, p.team, t.name as team_name
                  FROM player_history ph
-                 JOIN players p ON ph.player_id = p.id
+                 JOIN players p ON ph.player_code = p.player_code
                  JOIN teams t ON ph.opponent_team = t.id
-                 WHERE ph.player_id = ?
+                 WHERE ph.player_code = ?
                  ORDER BY ph.season DESC, ph.round''', (player_id,))
     history_data = c.fetchall()
     
