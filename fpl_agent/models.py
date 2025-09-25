@@ -40,7 +40,7 @@ def init_db():
                     clean_sheets INTEGER,
                     clean_sheets_per_90 TEXT,
                     clearances_blocks_interceptions INTEGER,
-                    code INTEGER UNIQUE,
+                    player_code INTEGER UNIQUE,
                     corners_and_indirect_freekicks_order INTEGER,
                     corners_and_indirect_freekicks_text TEXT,
                     cost_change_event INTEGER,
@@ -78,7 +78,7 @@ def init_db():
                     ict_index TEXT,
                     ict_index_rank INTEGER,
                     ict_index_rank_type INTEGER,
-                    id INTEGER PRIMARY KEY,
+                    season_id INTEGER PRIMARY KEY,
                     in_dreamteam BOOLEAN,
                     influence TEXT,
                     influence_rank INTEGER,
@@ -129,11 +129,12 @@ def init_db():
                     value_form TEXT,
                     value_season TEXT,
                     web_name TEXT,
-                    yellow_cards INTEGER
+                    yellow_cards INTEGER,
+                    season TEXT
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS player_history (
-                    player_id INTEGER,
-                    code INTEGER,
+                    season_id INTEGER,
+                    player_code INTEGER,
                     round INTEGER,
                     total_points INTEGER,
                     opponent_team INTEGER,
@@ -177,7 +178,8 @@ def init_db():
                     recoveries INTEGER,
                     tackles INTEGER,
                     fixture_difficulty INTEGER,
-                    FOREIGN KEY(player_id) REFERENCES players(id)
+                    FOREIGN KEY(season_id, season) REFERENCES players(season_id, season),
+                    FOREIGN KEY(player_code) REFERENCES players(player_code)
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS fixtures (
                     id INTEGER,

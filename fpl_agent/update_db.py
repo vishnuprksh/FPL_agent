@@ -3,167 +3,112 @@ import sqlite3
 import requests
 import os
 import argparse
+from fpl_agent.database_connection import get_connection
+from fpl_agent.models import init_db
 
 # Get the directory of the current script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(SCRIPT_DIR, '..', 'data', 'fpl_data.db')
 
 def load_historic_data(season='2025-26', if_exists='replace'):
-    if season == '2025-26':
-        # Use FPL API for current season
-        bootstrap_url = "https://fantasy.premierleague.com/api/bootstrap-static/"
-        try:
-            response = requests.get(bootstrap_url).json()
-            players_df = pd.DataFrame(response['elements'])
-            id_to_code = dict(zip(players_df['id'], players_df['code']))
-            print(f"Loaded player mapping for {season}: {len(id_to_code)} players")
-        except Exception as e:
-            print(f"Error loading bootstrap-static for {season}: {e}")
-            id_to_code = {}
+    # Unified approach: prefer GitHub CSVs for all seasons (simpler and consistent).
+    all_data = []
+    players_df = None
 
-        all_data = []
-        for gw in range(1, 39):  # GW1 to GW38
-            live_url = f"https://fantasy.premierleague.com/api/event/{gw}/live/"
-            try:
-                response = requests.get(live_url).json()
-                data = []
-                for elem in response['elements']:
-                    row = elem['stats'].copy()
-                    row['element'] = elem['id']
-                    data.append(row)
-                df = pd.DataFrame(data)
-                df['round'] = gw  # Ensure round is set
-                df['season'] = season  # Add season column
-                all_data.append(df)
-                print(f"Loaded {season} GW{gw}: {len(df)} records")
-            except Exception as e:
-                print(f"Error loading {season} GW{gw}: {e}")
-                break
+    # Load GW files
+    for gw in range(1, 39):  # GW1 to GW38
+        csv_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"
+        try:
+            df = pd.read_csv(csv_url)
+            df['round'] = gw
+            df['season'] = season
+            # element in the GW CSV is the player id for that season
+            df.rename(columns={'element': 'season_id'}, inplace=True)
+            all_data.append(df)
+            print(f"Loaded {season} GW{gw} from CSV: {len(df)} records")
+        except Exception as csv_err:
+            print(f"Warning: Could not load GW{gw} for {season}: {csv_err}")
+
+    # Load players for the season
+    players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
+    try:
+        players_df = pd.read_csv(players_url)
+        players_df.rename(columns={'id': 'season_id', 'code': 'player_code'}, inplace=True)
+        players_df['season'] = season
+        print(f"Loaded players_raw.csv for {season} from CSV: {len(players_df)} players")
+    except Exception as pcsv_err:
+        raise Exception(f"Error loading players_raw.csv for {season}: {pcsv_err}")
+
+    # Concatenate all GW data
+    if len(all_data) > 0:
+        all_df = pd.concat(all_data, ignore_index=True)
     else:
-        # Use GitHub CSV for previous seasons
-        all_data = []
-        for gw in range(1, 39):  # GW1 to GW38
-            url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/gws/gw{gw}.csv"
-            try:
-                df = pd.read_csv(url)
-                df['round'] = gw  # Ensure round is set
-                df['season'] = season  # Add season column
-                all_data.append(df)
-                print(f"Loaded {season} GW{gw}: {len(df)} records")
-            except Exception as e:
-                print(f"Error loading {season} GW{gw}: {e}")
-                break
+        all_df = pd.DataFrame()
 
-        # Load players_raw.csv to get id to code mapping
-        players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
+    # Map season_id -> player_code using players_df so player_history can include player_code (stable across seasons)
+    if not all_df.empty and players_df is not None and not players_df.empty:
+        # players_df has season_id and player_code
+        # Ensure both are same dtype
+        all_df['season_id'] = all_df['season_id'].astype(players_df['season_id'].dtype)
+        players_map = players_df[['season_id', 'player_code']].drop_duplicates()
+        all_df = all_df.merge(players_map, on='season_id', how='left')
+        print(f"Mapped player_code into GW data; missing player_code count: {all_df['player_code'].isna().sum()}")
+
+    # Insert into the SQLite DB using column intersection so we only write matching columns
+    conn = get_connection()
+    c = conn.cursor()
+
+    # If requested, remove existing rows for this season before inserting (safer than dropping tables)
+    if if_exists == 'replace':
         try:
-            players_df = pd.read_csv(players_url)
-            id_to_code = dict(zip(players_df['id'], players_df['code']))
-            print(f"Loaded player mapping for {season}: {len(id_to_code)} players")
+            c.execute('DELETE FROM players WHERE season = ?', (season,))
+            c.execute('DELETE FROM player_history WHERE season = ?', (season,))
+            conn.commit()
+            print(f"Cleared existing players and player_history rows for season {season}")
         except Exception as e:
-            print(f"Error loading players_raw.csv for {season}: {e}")
-            id_to_code = {}
+            conn.rollback()
+            raise
 
-    if all_data:
-        combined_df = pd.concat(all_data, ignore_index=True)
-        print(f"Total records for {season}: {len(combined_df)}")
-        print("Columns:", combined_df.columns.tolist())
+    def insert_dataframe(df: pd.DataFrame, table_name: str) -> int:
+        """Insert rows from df into table_name by matching columns present in the DB.
 
-        # Add missing columns with defaults
-        optional_cols = {
-            'fixture': 0,
-            'xP': 0.0,
-            'expected_assists': 0.0,
-            'expected_goal_involvements': 0.0,
-            'expected_goals': 0.0,
-            'expected_goals_conceded': 0.0,
-            'kickoff_time': '',
-            'modified': False,
-            'selected': 0,
-            'starts': 0,
-            'team_a_score': 0,
-            'team_h_score': 0,
-            'transfers_balance': 0,
-            'transfers_in': 0,
-            'transfers_out': 0,
-            'clearances_blocks_interceptions': 0,
-            'defensive_contribution': 0,
-            'recoveries': 0,
-            'tackles': 0,
-            'opponent_team': 0,
-            'was_home': False,
-            'value': 0
-        }
-        for col, default in optional_cols.items():
-            if col not in combined_df.columns:
-                combined_df[col] = default
+        Returns number of rows attempted to insert.
+        """
+        if df is None or df.empty:
+            return 0
 
-        # Set data types
-        dtype_map = {
-            'player_id': 'int64',  # element
-            'round': 'int64',
-            'total_points': 'int64',
-            'opponent_team': 'int64',
-            'season': 'object',
-            'assists': 'int64',
-            'bonus': 'int64',
-            'bps': 'int64',
-            'clean_sheets': 'int64',
-            'creativity': 'float64',
-            'goals_conceded': 'int64',
-            'goals_scored': 'int64',
-            'ict_index': 'float64',
-            'influence': 'float64',
-            'minutes': 'int64',
-            'own_goals': 'int64',
-            'penalties_missed': 'int64',
-            'penalties_saved': 'int64',
-            'red_cards': 'int64',
-            'saves': 'int64',
-            'threat': 'float64',
-            'value': 'int64',
-            'was_home': 'bool',
-            'yellow_cards': 'int64',
-            'fixture': 'int64',
-            'xP': 'float64',
-            'expected_assists': 'float64',
-            'expected_goal_involvements': 'float64',
-            'expected_goals': 'float64',
-            'expected_goals_conceded': 'float64',
-            'kickoff_time': 'object',
-            'modified': 'bool',
-            'selected': 'int64',
-            'starts': 'int64',
-            'team_a_score': 'int64',
-            'team_h_score': 'int64',
-            'transfers_balance': 'int64',
-            'transfers_in': 'int64',
-            'transfers_out': 'int64',
-            'clearances_blocks_interceptions': 'int64',
-            'defensive_contribution': 'int64',
-            'recoveries': 'int64',
-            'tackles': 'int64'
-        }
-        combined_df.rename(columns={'element': 'player_id'}, inplace=True)
-        combined_df = combined_df[list(dtype_map.keys())]
-        combined_df = combined_df.astype(dtype_map)
+        # Get table columns
+        c.execute(f"PRAGMA table_info({table_name})")
+        cols_info = c.fetchall()
+        table_cols = [r[1] for r in cols_info]
 
-        # Add code column using the mapping
-        combined_df['code'] = combined_df['player_id'].map(id_to_code).fillna(0).astype('int64')
+        # Keep columns that exist in the table
+        common_cols = [col for col in df.columns if col in table_cols]
+        if not common_cols:
+            return 0
 
-        # Analyze features
-        print("\nData types:")
-        print(combined_df.dtypes)
+        cols_sql = ",".join(common_cols)
+        placeholders = ",".join(["?" for _ in common_cols])
+        sql = f"INSERT OR REPLACE INTO {table_name} ({cols_sql}) VALUES ({placeholders})"
 
-        print("\nSample data:")
-        print(combined_df.head())
+        # Replace NaN with None so sqlite stores NULLs
+        records = df[common_cols].where(pd.notnull(df[common_cols]), None).values.tolist()
 
-        # Recreate table and insert data
-        conn = sqlite3.connect(DB_PATH)
-        combined_df.to_sql('player_history', conn, if_exists=if_exists, index=False)
-        conn.commit()
-        conn.close()
-        print(f"Inserted {len(combined_df)} records for {season}")
+        try:
+            c.executemany(sql, records)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        return len(records)
+
+    players_inserted = insert_dataframe(players_df, 'players')
+    history_inserted = insert_dataframe(all_df, 'player_history')
+
+    conn.close()
+    print(f"Inserted {players_inserted} players and {history_inserted} player_history rows for {season}")
+
 
 def load_fixture_data(season='2025-26'):
     """Load fixture data and store in database"""
@@ -229,12 +174,12 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='Load FPL data')
-    parser.add_argument('--data_type', choices=['historic', 'fixtures', 'both'], default='both',
-                       help='Type of data to load (default: both)')
-    parser.add_argument('--previous_years', type=int, default=1, 
-                       help='Number of previous seasons to collect (default: 1)')
+    parser.add_argument('--previous_years', type=int, default=1,
+                        help='Number of previous seasons to collect (default: 1)')
 
     args = parser.parse_args()
+
+    init_db()
 
     # Load current season + N previous seasons
     seasons = []
@@ -245,10 +190,11 @@ def main():
 
     for season in seasons:
         print(f"Loading data for season: {season}")
-        
-        if args.data_type in ['historic', 'both']:
-            if_exists = 'replace' if season == seasons[0] else 'append'
-            load_historic_data(season, if_exists)
-        
-        if args.data_type in ['fixtures', 'both']:
-            load_fixture_data(season)
+
+        # Always load both historic and fixture data
+        if_exists = 'replace' if season == seasons[0] else 'append'
+        load_historic_data(season, if_exists)
+        load_fixture_data(season)
+
+if __name__ == '__main__':
+    main()

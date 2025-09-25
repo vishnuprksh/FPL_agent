@@ -10,7 +10,7 @@ def players():
         columns = columns.split(',')
     players = get_players(columns)
     all_keys = get_player_columns() + ['position', 'team_name']
-    selected_columns = columns if columns else ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
+    selected_columns = columns if columns else ['player_code', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
     return render_template('players.html', players=players, all_keys=all_keys, selected_columns=selected_columns)
 
 def teams():

@@ -1,16 +1,20 @@
 from flask import Flask
 from fpl_agent.models import init_db
-from fpl_agent.data_storage import fetch_and_store_data
+from fpl_agent.update_db import load_historic_data, load_fixture_data
 from fpl_agent.routes import home, players, teams, player_history, null_values
 import sys
 
 app = Flask(__name__)
 app.template_folder = '/workspaces/FPL_agent/templates'
 
-# Initialize DB on startup
-init_db()
+# If --clean is passed, reload current season + previous seasons into the DB
 if '--clean' in sys.argv:
-    fetch_and_store_data()
+    # Default behavior: load current season and 1 previous season; you can
+    # pass a different number by using --previous_years=N when running the app
+    # (the update_db.main CLI also supports this).
+    # Load historic player data then fixture data for the same seasons.
+    load_historic_data()
+    load_fixture_data()
 
 @app.route('/')
 def home_route():
