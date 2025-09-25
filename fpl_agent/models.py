@@ -1,5 +1,5 @@
 import sqlite3
-from src.database_connection import get_connection
+from fpl_agent.database_connection import get_connection
 
 def init_db():
     """Initialize the database and create tables if they don't exist."""
@@ -198,15 +198,6 @@ def init_db():
                     pulse_id INTEGER,
                     season TEXT,
                     PRIMARY KEY (id, season)
-                )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS player_calculated_features (
-                    code INTEGER,
-                    pred_match1 REAL,
-                    pred_match2 REAL,
-                    pred_match3 REAL,
-                    total_pred REAL,
-                    pred_per_mil REAL,
-                    FOREIGN KEY(code) REFERENCES players(code)
                 )''')
     conn.commit()
     conn.close()

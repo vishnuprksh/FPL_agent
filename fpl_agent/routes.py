@@ -1,5 +1,5 @@
 from flask import render_template, request
-from src.queries import get_players, get_teams, get_player_history, get_null_percentages, get_player_columns
+from fpl_agent.queries import get_players, get_teams, get_player_history, get_null_percentages, get_player_columns
 
 def home():
     return render_template('home.html')
@@ -10,7 +10,7 @@ def players():
         columns = columns.split(',')
     players = get_players(columns)
     all_keys = get_player_columns() + ['position', 'team_name']
-    selected_columns = columns if columns else ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form', 'pred_match1', 'pred_match2', 'pred_match3', 'total_pred', 'pred_per_mil']
+    selected_columns = columns if columns else ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
     return render_template('players.html', players=players, all_keys=all_keys, selected_columns=selected_columns)
 
 def teams():

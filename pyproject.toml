@@ -4,12 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fpl-agent"
-version = "0.1.0"
+version = "0.1.1"
 description = "FPL Agent for data collection and analysis"
 dependencies = [
     "pandas",
     "requests"
 ]
 
+[tool.setuptools.packages.find]
+where = ["fpl_agent"]
+
 [project.scripts]
-update_db = "load_historic_data:main"
+app = "fpl_agent.app:main"
+update_db = "fpl_agent.update_db:main"

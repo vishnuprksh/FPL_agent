@@ -1,4 +1,4 @@
-from src.database_connection import get_connection
+from fpl_agent.database_connection import get_connection
 
 def get_player_columns():
     """Get all column names from players table."""
@@ -11,10 +11,10 @@ def get_player_columns():
 
 def get_players(columns=None):
     """Retrieve players with selected columns."""
-    prediction_columns = ['pred_match1', 'pred_match2', 'pred_match3', 'total_pred', 'pred_per_mil']
-    all_columns = get_player_columns() + ['position', 'team_name'] + prediction_columns
+    # prediction columns removed from schema; only include available columns
+    all_columns = get_player_columns() + ['position', 'team_name']
     if columns is None:
-        columns = ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form', 'pred_match1', 'pred_match2', 'pred_match3', 'total_pred', 'pred_per_mil']
+        columns = ['id', 'web_name', 'position', 'team_name', 'now_cost', 'total_points', 'form']
     else:
         columns = [col for col in columns if col in all_columns]
         if not columns:
@@ -26,12 +26,11 @@ def get_players(columns=None):
             select_columns.append("CASE p.element_type WHEN 1 THEN 'GK' WHEN 2 THEN 'DEF' WHEN 3 THEN 'MID' WHEN 4 THEN 'FWD' END as position")
         elif col == 'team_name':
             select_columns.append("t.name as team_name")
-        elif col in prediction_columns:
-            select_columns.append(f"pcf.{col}")
+        
         else:
             select_columns.append(f"p.{col}")
     
-    query = f"SELECT {', '.join(select_columns)} FROM players p JOIN teams t ON p.team = t.id LEFT JOIN player_calculated_features pcf ON p.code = pcf.code ORDER BY p.web_name"
+    query = f"SELECT {', '.join(select_columns)} FROM players p JOIN teams t ON p.team = t.id ORDER BY p.web_name"
     
     conn = get_connection()
     c = conn.cursor()

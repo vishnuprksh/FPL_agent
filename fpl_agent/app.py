@@ -1,7 +1,7 @@
 from flask import Flask
-from src.models import init_db
-from src.data_storage import fetch_and_store_data
-from src.routes import home, players, teams, player_history, null_values
+from fpl_agent.models import init_db
+from fpl_agent.data_storage import fetch_and_store_data
+from fpl_agent.routes import home, players, teams, player_history, null_values
 import sys
 
 app = Flask(__name__)
@@ -32,5 +32,8 @@ def player_history_route(player_id):
 def null_values_route():
     return null_values()
 
-if __name__ == '__main__':
+def main():
     app.run(debug=True)
+
+if __name__ == '__main__':
+    main()

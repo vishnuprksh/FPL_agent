@@ -1,23 +1,37 @@
 import logging
-from sklearn.linear_model import LinearRegression
-import numpy as np
-from src.database_connection import get_connection
+import sqlite3
+from fpl_agent.database_connection import get_connection
 
 def update_player_predictions():
     """Update player predictions using linear regression on historical data."""
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    
+
+    # Lazy imports for optional ML dependencies
+    try:
+        from sklearn.linear_model import LinearRegression
+        import numpy as np
+    except Exception:
+        logger.warning("sklearn or numpy not available; prediction calculation skipped")
+        return []
+
     conn = get_connection()
     c = conn.cursor()
     # Get all players
     c.execute('SELECT id, now_cost FROM players')
     players = c.fetchall()
+    results = []
     for player_id, now_cost in players:
         logger.info(f"Processing player ID: {player_id}")
         # Get player history: difficulty and points
-        c.execute('SELECT fixture_difficulty, total_points FROM player_history WHERE player_id = ? AND fixture_difficulty IS NOT NULL AND total_points IS NOT NULL', (player_id,))
-        history = c.fetchall()
+        try:
+            c.execute('SELECT fixture_difficulty, total_points FROM player_history WHERE player_id = ? AND fixture_difficulty IS NOT NULL AND total_points IS NOT NULL', (player_id,))
+            history = c.fetchall()
+        except sqlite3.OperationalError as e:
+            # Older DB schema may not have the expected columns; skip predictions in that case
+            logger.warning(f"Skipping predictions: database schema missing columns or table - {e}")
+            conn.close()
+            return []
         logger.info(f"Player {player_id}: Found {len(history)} historical matches with valid data")
         
         if len(history) < 2:
@@ -64,9 +78,16 @@ def update_player_predictions():
             pred_per_mil = round(total_pred / (now_cost / 10), 1) if now_cost and now_cost > 0 else None
             logger.info(f"Player {player_id}: Total pred: {total_pred}, Pred per mil: {pred_per_mil}")
         
-        # Update player row
-        c.execute('''UPDATE players SET pred_match1 = ?, pred_match2 = ?, pred_match3 = ?, total_pred = ?, pred_per_mil = ? WHERE id = ?''',
-                  (pred_points[0], pred_points[1], pred_points[2], total_pred, pred_per_mil, player_id))
-    conn.commit()
+        # Collect results instead of writing to removed DB columns
+        results.append({
+            'player_id': player_id,
+            'pred_match1': pred_points[0],
+            'pred_match2': pred_points[1],
+            'pred_match3': pred_points[2],
+            'total_pred': total_pred,
+            'pred_per_mil': pred_per_mil
+        })
+    # No DB columns to update for predictions (columns removed). Close DB and return results.
     conn.close()
-    logger.info("All players processed successfully")
+    logger.info("All players processed successfully (predictions returned, not saved to DB)")
+    return results
