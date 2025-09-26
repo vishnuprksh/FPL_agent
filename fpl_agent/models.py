@@ -178,7 +178,7 @@ def init_db():
                     recoveries INTEGER,
                     tackles INTEGER,
                     fixture_difficulty INTEGER,
-                    FOREIGN KEY(season_id, season) REFERENCES players(season_id, season),
+                    UNIQUE (season, fixture, player_code),
                     FOREIGN KEY(player_code) REFERENCES players(player_code)
                 )''')
     c.execute('''CREATE TABLE IF NOT EXISTS fixtures (

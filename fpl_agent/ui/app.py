@@ -48,6 +48,40 @@ def create_dash_app(server: Flask = None):
         from fpl_agent.ui.home import home_layout
         return home_layout()
 
+    # Filter players table by search term. This callback is safe to register
+    # regardless of the current page because we used suppress_callback_exceptions
+    @app.callback(
+        Output('players-table', 'data'),
+        Input('players-search', 'value')
+    )
+    def filter_players(search_value):
+        # If the players table isn't rendered yet, Dash will call this with None.
+        # queries.get_players() returns the full list; do a case-insensitive filter.
+        players = queries.get_players() or []
+        
+        # Add history buttons to each player
+        for p in players:
+            pid = p.get('id') or p.get('player_code')
+            p['history_link'] = f'<a href="/player/{pid}/history" class="btn btn-primary btn-sm">View History</a>'
+            
+        if not search_value:
+            return players
+
+        sv = str(search_value).strip().lower()
+
+        def matches(p):
+            # search common string fields: first_name, second_name, web_name, team
+            for key in ('first_name', 'second_name', 'web_name', 'team'):
+                v = p.get(key)
+                if v and sv in str(v).lower():
+                    return True
+            # also check id or player_code
+            if sv.isdigit() and str(p.get('id') or p.get('player_code', '')).startswith(sv):
+                return True
+            return False
+
+        return [p for p in players if matches(p)]
+
     return app
 
 

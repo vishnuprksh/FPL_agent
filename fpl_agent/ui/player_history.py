@@ -1,5 +1,4 @@
-from dash import html
-import dash_table
+from dash import html, dash_table
 import dash_bootstrap_components as dbc
 from fpl_agent import queries
 
@@ -17,7 +16,7 @@ def player_history_layout(player_id):
         dash_table.DataTable(
             data=history,
             columns=columns,
-            page_size=20,
+            page_size=25,
             style_table={'overflowX': 'auto'}
         )
     ], fluid=True)
