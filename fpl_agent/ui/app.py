@@ -21,6 +21,7 @@ def create_dash_app(server: Flask = None):
         dbc.Row([
             dbc.Col(dbc.Button('Players', href='/players', color='primary', className='me-2'), width='auto'),
             dbc.Col(dbc.Button('Teams', href='/teams', color='secondary', className='me-2'), width='auto'),
+            dbc.Col(dbc.Button('Analysis Report', href='/analysis-report', color='success', className='me-2'), width='auto'),
             dbc.Col(dbc.Button('Null Values', href='/null-values', color='info'), width='auto'),
         ], justify='center'),
         html.Hr(),
@@ -41,6 +42,9 @@ def create_dash_app(server: Flask = None):
         if pathname == '/teams':
             from fpl_agent.ui.teams import teams_layout
             return teams_layout()
+        if pathname == '/analysis-report':
+            from fpl_agent.ui.analysis_report import analysis_report_layout
+            return analysis_report_layout()
         if pathname == '/null-values':
             from fpl_agent.ui.null_values import null_values_layout
             return null_values_layout()

@@ -22,6 +22,7 @@ def load_historic_data(season='2025-26', if_exists='replace'):
             df = pd.read_csv(csv_url)
             df['round'] = gw
             df['season'] = season
+            df['fixture_difficulty'] = 3
             # element in the GW CSV is the player id for that season
             df.rename(columns={'element': 'season_id'}, inplace=True)
             all_data.append(df)
@@ -29,18 +30,14 @@ def load_historic_data(season='2025-26', if_exists='replace'):
         except Exception as csv_err:
             print(f"Warning: Could not load GW{gw} for {season}: {csv_err}")
 
-    # Load players only for the current season (2025-26)
-    if season == '2025-26':
-        players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
-        try:
-            players_df = pd.read_csv(players_url)
-            players_df.rename(columns={'id': 'season_id', 'code': 'player_code'}, inplace=True)
-            players_df['season'] = season
-            print(f"Loaded players_raw.csv for {season} from CSV: {len(players_df)} players")
-        except Exception as pcsv_err:
-            raise Exception(f"Error loading players_raw.csv for {season}: {pcsv_err}")
-    else:
-        print(f"Skipping players_raw.csv for {season} - only collecting for current season (2025-26)")
+    players_url = f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/{season}/players_raw.csv"
+    try:
+        players_df = pd.read_csv(players_url)
+        players_df.rename(columns={'id': 'season_id', 'code': 'player_code'}, inplace=True)
+        players_df['season'] = season
+        print(f"Loaded players_raw.csv for {season} from CSV: {len(players_df)} players")
+    except Exception as pcsv_err:
+        raise Exception(f"Error loading players_raw.csv for {season}: {pcsv_err}")
 
     # Concatenate all GW data
     if len(all_data) > 0:
@@ -53,7 +50,7 @@ def load_historic_data(season='2025-26', if_exists='replace'):
         # players_df has season_id and player_code
         # Ensure both are same dtype
         all_df['season_id'] = all_df['season_id'].astype(players_df['season_id'].dtype)
-        players_map = players_df[['season_id', 'player_code']].drop_duplicates()
+        players_map = players_df[['season_id', 'player_code']]
         all_df = all_df.merge(players_map, on='season_id', how='left')
         print(f"Mapped player_code into GW data; missing player_code count: {all_df['player_code'].isna().sum()}")
     elif not all_df.empty and players_df is None:
