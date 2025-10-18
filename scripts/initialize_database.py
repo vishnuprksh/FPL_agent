@@ -3,6 +3,10 @@
 FPL Agent - Load elements data from FPL API to SQLite database
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from pathlib import Path
 from fpl_agent import FPLAPIClient, FPLDatabase
 

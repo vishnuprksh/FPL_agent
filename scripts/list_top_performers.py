@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple script to show the top 3 performers in each position for this week.
-Based on predicted points (ep_this) from the FPL database.
+List Top Performers
+
+Shows the top performing players for each position.
 """
+
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fpl_agent import FPLDatabase, FPLFormatter
 

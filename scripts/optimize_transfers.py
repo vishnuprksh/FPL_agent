@@ -6,6 +6,10 @@ Suggests the best single transfer to maximize points for the current gameweek.
 Takes a current team and evaluates all possible single transfers.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from fpl_agent import FPLTransferOptimizer, FPLFormatter
 from typing import Dict
 
