@@ -10,7 +10,7 @@ import sqlite3
 import pandas as pd
 import os
 import tempfile
-from fpl_agent.optimizer import FPLSquadOptimizer
+from scripts.create_best_team import FPLSquadOptimizer
 
 
 def create_test_database():

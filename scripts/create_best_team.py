@@ -1,11 +1,15 @@
+#!/usr/bin/env python3
 """
-Squad optimization using Integer Linear Programming (ILP).
+FPL Squad Optimizer using Integer Linear Programming (ILP)
+
+Creates an optimal 15-player FPL squad that maximizes predicted points for the 
+starting 11 while keeping bench players as cheap as possible.
 """
 
+import sqlite3
 import pandas as pd
 from ortools.linear_solver import pywraplp
-from typing import Dict
-from .database import FPLDatabase
+from typing import Dict, List, Tuple, Optional
 
 
 class FPLSquadOptimizer:
@@ -19,18 +23,43 @@ class FPLSquadOptimizer:
             db_path: Path to the SQLite database
             epsilon: Weight for bench cost penalty (should be small)
         """
-        self.db = FPLDatabase(db_path)
+        self.db_path = db_path
         self.epsilon = epsilon
         self.solver = None
         self.players_df = None
         
+    def load_player_data(self) -> pd.DataFrame:
+        """Load player data from the SQLite database."""
+        query = """
+        SELECT 
+            id,
+            web_name as name,
+            element_type_name as position,
+            team,
+            now_cost / 10.0 as price,  -- Convert from tenths to millions
+            ep_this as predicted_points
+        FROM elements 
+        WHERE can_select = 1 
+        AND ep_this IS NOT NULL 
+        AND now_cost > 0
+        ORDER BY id
+        """
+        
+        with sqlite3.connect(self.db_path) as conn:
+            df = pd.read_sql_query(query, conn)
+        
+        # Handle any missing predicted points
+        df['predicted_points'] = df['predicted_points'].fillna(0.0)
+        
+        print(f"Loaded {len(df)} players from database")
+        print(f"Position distribution: {df['position'].value_counts().to_dict()}")
+        
+        return df
+    
     def create_optimization_model(self) -> pywraplp.Solver:
         """Create and configure the ILP model."""
-        self.players_df = self.db.load_player_data()
+        self.players_df = self.load_player_data()
         n_players = len(self.players_df)
-        
-        print(f"Loaded {len(self.players_df)} players from database")
-        print(f"Position distribution: {self.players_df['position'].value_counts().to_dict()}")
         
         # Create solver
         solver = pywraplp.Solver.CreateSolver('SCIP')
@@ -163,3 +192,93 @@ class FPLSquadOptimizer:
             'objective_value': objective_value,
             'epsilon': self.epsilon
         }
+    
+    def format_results(self, results: Dict) -> str:
+        """Format the optimization results for display."""
+        output = []
+        output.append("=" * 60)
+        output.append("FPL SQUAD OPTIMIZATION RESULTS")
+        output.append("=" * 60)
+        
+        # Summary
+        output.append(f"\nOBJECTIVE VALUE: {results['objective_value']:.6f}")
+        output.append(f"EPSILON (bench penalty): {results['epsilon']}")
+        output.append(f"TOTAL PREDICTED POINTS (Starting XI): {results['total_predicted_points']:.2f}")
+        output.append(f"TOTAL SQUAD COST: £{results['total_cost']:.1f}m")
+        output.append(f"BENCH COST: £{results['bench_cost']:.1f}m")
+        
+        # Starting XI
+        output.append(f"\n{'='*30} STARTING XI {'='*30}")
+        start_by_pos = results['starting_xi'].groupby('position')
+        for pos in ['GK', 'DEF', 'MID', 'FWD']:
+            if pos in start_by_pos.groups:
+                players = start_by_pos.get_group(pos)
+                output.append(f"\n{pos} ({len(players)}):")
+                for _, player in players.iterrows():
+                    output.append(
+                        f"  {player['name']:20} (Team {player['team']:2}) "
+                        f"£{player['price']:4.1f}m  {player['predicted_points']:5.2f}pts"
+                    )
+        
+        # Bench
+        output.append(f"\n{'='*35} BENCH {'='*35}")
+        bench_by_pos = results['bench'].groupby('position')
+        for pos in ['GK', 'DEF', 'MID', 'FWD']:
+            if pos in bench_by_pos.groups:
+                players = bench_by_pos.get_group(pos)
+                output.append(f"\n{pos} ({len(players)}):")
+                for _, player in players.iterrows():
+                    output.append(
+                        f"  {player['name']:20} (Team {player['team']:2}) "
+                        f"£{player['price']:4.1f}m  {player['predicted_points']:5.2f}pts"
+                    )
+        
+        # Full squad summary
+        output.append(f"\n{'='*25} FULL SQUAD SUMMARY {'='*25}")
+        squad_by_pos = results['squad'].groupby('position')
+        for pos in ['GK', 'DEF', 'MID', 'FWD']:
+            if pos in squad_by_pos.groups:
+                players = squad_by_pos.get_group(pos)
+                total_cost = players['price'].sum()
+                total_points = players['predicted_points'].sum()
+                output.append(f"{pos}: {len(players)} players, £{total_cost:.1f}m, {total_points:.2f}pts")
+        
+        return "\n".join(output)
+
+
+def main():
+    """Main function to run the FPL squad optimization."""
+    db_path = "/workspaces/FPL_agent/data/fpl_agent.db"
+    
+    # Create optimizer
+    optimizer = FPLSquadOptimizer(db_path, epsilon=0.001)
+    
+    try:
+        # Solve the optimization problem
+        results = optimizer.solve()
+        
+        # Display results
+        print(optimizer.format_results(results))
+        
+        # Validation
+        print(f"\n{'='*25} VALIDATION {'='*25}")
+        squad = results['squad']
+        start = results['starting_xi']
+        
+        print(f"Squad size: {len(squad)} (should be 15)")
+        print(f"Starting XI size: {len(start)} (should be 11)")
+        print(f"Squad positions: {squad['position'].value_counts().to_dict()}")
+        print(f"Starting positions: {start['position'].value_counts().to_dict()}")
+        print(f"Teams with 3+ players: {squad.groupby('team').size()[squad.groupby('team').size() >= 3].to_dict()}")
+        print(f"Budget used: £{squad['price'].sum():.1f}m / £100.0m")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        print("\nPossible solutions:")
+        print("- Increase budget constraint")
+        print("- Relax team cap (allow more than 3 players per team)")
+        print("- Check data quality (missing predicted points, prices)")
+
+
+if __name__ == "__main__":
+    main()
