@@ -80,12 +80,12 @@ class FPLSquadOptimizer:
             predicted_points = self.players_df.iloc[i]['predicted_points']
             price = self.players_df.iloc[i]['price']
             
-            # Primary: maximize starting XI points
+            # Primary: maximize starting XI points (no cost penalty for starters)
             objective.SetCoefficient(start[i], predicted_points)
             
-            # Secondary: minimize bench cost (squad - start = bench players)
+            # Secondary: minimize bench cost (bench = squad - start)
+            # This penalizes expensive bench players only
             objective.SetCoefficient(squad[i], -self.epsilon * price)
-            objective.SetCoefficient(start[i], self.epsilon * price)
         
         objective.SetMaximization()
         
