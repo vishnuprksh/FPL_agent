@@ -1,0 +1,21 @@
+# Core library dependencies
+pandas>=2.1.0
+requests>=2.31.0
+scikit-learn>=1.0.0
+pulp>=2.7.0
+PyYAML>=6.0.0
+
+# Backend dependencies
+Flask>=2.3.0
+Flask-CORS>=4.0.0
+
+# Frontend dependencies
+dash>=2.14.0
+dash-bootstrap-components>=1.5.0
+plotly>=5.17.0
+
+# Development dependencies
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+flake8>=6.0.0
