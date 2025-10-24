@@ -8,6 +8,7 @@ starting 11 while keeping bench players as cheap as possible.
 
 import sqlite3
 import pandas as pd
+import requests
 from ortools.linear_solver import pywraplp
 from typing import Dict, List, Tuple, Optional
 
@@ -27,6 +28,21 @@ class FPLSquadOptimizer:
         self.epsilon = epsilon
         self.solver = None
         self.players_df = None
+        self.current_gameweek = self._get_current_gameweek()
+    
+    def _get_current_gameweek(self) -> int:
+        """Fetch current gameweek from FPL API."""
+        try:
+            url = "https://fantasy.premierleague.com/api/bootstrap-static/"
+            data = requests.get(url).json()
+            current_gw = next(event for event in data["events"] if event["is_current"])
+            gameweek_id = current_gw["id"]
+            print(f"Current Gameweek: {gameweek_id} (weeks finished: {gameweek_id - 1})")
+            return gameweek_id
+        except Exception as e:
+            print(f"Warning: Could not fetch current gameweek: {e}")
+            print("Defaulting to gameweek 1")
+            return 1
         
     def load_player_data(self) -> pd.DataFrame:
         """Load player data from the SQLite database."""
@@ -37,7 +53,8 @@ class FPLSquadOptimizer:
             element_type_name as position,
             team,
             now_cost / 10.0 as price,  -- Convert from tenths to millions
-            ep_this as predicted_points
+            ep_this as predicted_points,
+            starts
         FROM elements 
         WHERE can_select = 1 
         AND ep_this IS NOT NULL 
@@ -50,11 +67,28 @@ class FPLSquadOptimizer:
         
         # Handle any missing predicted points
         df['predicted_points'] = df['predicted_points'].fillna(0.0)
+        df['starts'] = df['starts'].fillna(0)
         
-        print(f"Loaded {len(df)} players from database")
-        print(f"Position distribution: {df['position'].value_counts().to_dict()}")
+        print(f"Loaded {len(df)} players from database (before filtering)")
         
-        return df
+        # Filter out non-frequent starters
+        # A player is considered a frequent starter if starts >= 50% of weeks finished
+        weeks_finished = self.current_gameweek
+        min_starts_required = weeks_finished * 0.75
+        
+        print(f"Weeks finished: {weeks_finished}, minimum starts required: {min_starts_required:.1f}")
+        
+        df_filtered = df[df['starts'] >= min_starts_required].copy()
+        
+        # CRITICAL: Reset index after filtering to avoid optimization errors
+        df_filtered = df_filtered.reset_index(drop=True)
+        
+        players_removed = len(df) - len(df_filtered)
+        print(f"Filtered out {players_removed} non-frequent starters")
+        print(f"Remaining players: {len(df_filtered)}")
+        print(f"Position distribution: {df_filtered['position'].value_counts().to_dict()}")
+        
+        return df_filtered
     
     def create_optimization_model(self) -> pywraplp.Solver:
         """Create and configure the ILP model."""

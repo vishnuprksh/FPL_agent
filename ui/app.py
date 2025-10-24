@@ -148,9 +148,24 @@ app.layout = dbc.Container([
                 ], width=6)
             ]),
             dbc.Button("Replace Player", id='replace-button', color="primary", className="mt-3 me-2"),
+            dbc.Button("Remove Player", id='remove-button', color="danger", className="mt-3 me-2"),
             dbc.Button("Save Team to Database", id='save-team-button', color="info", className="mt-3"),
             html.Div(id='edit-message', className="mt-2"),
-            html.Div(id='save-message', className="mt-2")
+            html.Div(id='remove-message', className="mt-2"),
+            html.Div(id='save-message', className="mt-2"),
+            
+            html.Hr(className="my-4"),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Add New Player:"),
+                    dcc.Dropdown(id='player-to-add-dropdown', placeholder="Select player to add...")
+                ], width=8),
+                dbc.Col([
+                    dbc.Button("Add Player", id='add-button', color="success", className="mt-4"),
+                ], width=4)
+            ]),
+            html.Div(id='add-message', className="mt-2")
         ], width=12)
     ]),
     
@@ -212,8 +227,8 @@ def update_team_display(team_data):
                     {'name': 'Starter', 'id': 'is_starter', 'type': 'text'}
                 ],
                 style_data_conditional=[
-                    {'if': {'filter_query': '{is_starter} = true'}, 'backgroundColor': '#d4edda'},
-                    {'if': {'filter_query': '{is_starter} = false'}, 'backgroundColor': '#f8f9fa'}
+                    {'if': {'filter_query': '{is_starter} = true'}, 'backgroundColor': '#c3f0ca'},
+                    {'if': {'filter_query': '{is_starter} = false'}, 'backgroundColor': "#7fd5ba"}
                 ],
                 style_cell={
                     'textAlign': 'left',
@@ -249,37 +264,36 @@ def update_team_display(team_data):
 
 @callback(
     Output('replacement-player-dropdown', 'options'),
+    Output('player-to-add-dropdown', 'options'),
     Input('player-to-replace-dropdown', 'value'),
     State('team-store', 'data')
 )
 def update_replacement_options(selected_player_id, team_data):
-    """Update replacement dropdown based on selected player."""
-    if not selected_player_id or not team_data:
-        return []
+    """Update replacement dropdown to show all available players from any position."""
+    if not team_data:
+        return [], []
     
     team_df = team_json_to_dataframe(team_data)
-    selected_player = team_df[team_df['id'] == selected_player_id].iloc[0]
-    position = selected_player['position']
     current_team_ids = team_df['id'].tolist()
     
-    # Get available players of same position not in team
+    # Get all available players not in current team
     available = all_players[
-        (all_players['position'] == position) &
-        (~all_players['id'].isin(current_team_ids))
+        ~all_players['id'].isin(current_team_ids)
     ].copy()
     
-    # Sort by price
-    available = available.sort_values('price', ascending=True)
+    # Sort by position then price
+    available = available.sort_values(['position', 'price'], ascending=[True, True])
     
     replacement_options = [
         {
-            'label': f"{row['name']} ({team_id_to_name.get(row['team'], 'Unknown')}) - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
+            'label': f"{row['name']} ({row['position']}) - {team_id_to_name.get(row['team'], 'Unknown')} - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
             'value': row['id']
         }
         for _, row in available.iterrows()
     ]
     
-    return replacement_options
+    # Same options for adding players
+    return replacement_options, replacement_options
 
 @callback(
     Output('team-store', 'data', allow_duplicate=True),
@@ -291,7 +305,7 @@ def update_replacement_options(selected_player_id, team_data):
     prevent_initial_call=True
 )
 def replace_player(n_clicks, old_player_id, new_player_id, team_data):
-    """Replace a player in the team."""
+    """Replace a player in the team, allowing cross-position transfers."""
     if not n_clicks or not old_player_id or not new_player_id:
         return team_data, ""
     
@@ -309,6 +323,24 @@ def replace_player(n_clicks, old_player_id, new_player_id, team_data):
             color="danger"
         )
     
+    # Validate position limits
+    position_counts = team_df['position'].value_counts().to_dict()
+    if new_player['position'] != old_player['position']:
+        position_counts[old_player['position']] = position_counts.get(old_player['position'], 0) - 1
+        position_counts[new_player['position']] = position_counts.get(new_player['position'], 0) + 1
+        
+        for pos, limit in POSITION_LIMITS.items():
+            if position_counts.get(pos, 0) > limit:
+                return team_data, dbc.Alert(
+                    f"⚠️ Cannot make transfer: Would have {position_counts[pos]} {pos} players (max {limit})",
+                    color="warning"
+                )
+            if position_counts.get(pos, 0) < (2 if pos == 'GK' else 0):
+                return team_data, dbc.Alert(
+                    f"⚠️ Cannot make transfer: Would have {position_counts.get(pos, 0)} {pos} players (min {2 if pos == 'GK' else 1})",
+                    color="warning"
+                )
+    
     # Validate team constraint
     team_counts = team_df['team'].value_counts().to_dict()
     if new_player['team'] != old_player['team']:
@@ -316,28 +348,189 @@ def replace_player(n_clicks, old_player_id, new_player_id, team_data):
         team_counts[new_player['team']] = team_counts.get(new_player['team'], 0) + 1
         if team_counts.get(new_player['team'], 0) > 3:
             return team_data, dbc.Alert(
-                f"❌ Cannot make transfer: Would have {team_counts[new_player['team']]} players from team {new_player['team']} (max 3)",
-                color="danger"
+                f"⚠️ Cannot make transfer: Would have {team_counts[new_player['team']]} players from {team_id_to_name.get(new_player['team'], 'team')} (max 3 per team)",
+                color="warning"
             )
     
-    # Make the replacement
+    # Rebuild team structure with new player
+    # Remove old player from team_df and add new player
+    team_df = team_df[team_df['id'] != old_player_id]
+    new_player_row = {
+        'id': int(new_player['id']),
+        'name': new_player['name'],
+        'position': new_player['position'],
+        'team': int(new_player['team']),
+        'team_name': team_id_to_name.get(new_player['team'], f"Team {new_player['team']}"),
+        'price': new_player['price'],
+        'predicted_points': new_player['predicted_points'],
+        'is_starter': old_player['is_starter']  # Keep starter status
+    }
+    team_df = pd.concat([team_df, pd.DataFrame([new_player_row])], ignore_index=True)
+    
+    # Rebuild team structure
     new_team_data = {'team': []}
-    for pos_data in team_data['team']:
-        new_pos_data = {'position': pos_data['position'], 'players': []}
-        for player in pos_data['players']:
-            if player['id'] == old_player_id:
-                new_pos_data['players'].append({
-                    'id': int(new_player['id']),
-                    'name': new_player['name'],
-                    'team': int(new_player['team']),
-                    'is_starter': player.get('is_starter', True)
-                })
-            else:
-                new_pos_data['players'].append(player)
-        new_team_data['team'].append(new_pos_data)
+    for position in ['GK', 'DEF', 'MID', 'FWD']:
+        pos_players = team_df[team_df['position'] == position]
+        if not pos_players.empty:
+            new_team_data['team'].append({
+                'position': position,
+                'players': [
+                    {
+                        'id': int(row['id']),
+                        'name': row['name'],
+                        'team': int(row['team']),
+                        'is_starter': bool(row['is_starter'])
+                    }
+                    for _, row in pos_players.iterrows()
+                ]
+            })
     
     message = dbc.Alert(
-        f"✅ Replaced {old_player['name']} with {new_player['name']} (Cost: £{cost_change:+.1f}m)",
+        f"✅ Replaced {old_player['name']} ({old_player['position']}) with {new_player['name']} ({new_player['position']}) | Cost: £{cost_change:+.1f}m",
+        color="success"
+    )
+    
+    return new_team_data, message
+
+@callback(
+    Output('team-store', 'data', allow_duplicate=True),
+    Output('remove-message', 'children'),
+    Input('remove-button', 'n_clicks'),
+    State('player-to-replace-dropdown', 'value'),
+    State('team-store', 'data'),
+    prevent_initial_call=True
+)
+def remove_player(n_clicks, player_id, team_data):
+    """Remove a player from the team temporarily."""
+    if not n_clicks or not player_id:
+        return team_data, ""
+    
+    team_df = team_json_to_dataframe(team_data)
+    player_to_remove = team_df[team_df['id'] == player_id].iloc[0]
+    
+    # Check minimum position requirements
+    position_counts = team_df['position'].value_counts().to_dict()
+    new_count = position_counts.get(player_to_remove['position'], 0) - 1
+    
+    # GK must have at least 1, others can go to 0
+    if player_to_remove['position'] == 'GK' and new_count < 1:
+        return team_data, dbc.Alert(
+            "⚠️ Cannot remove player: Must have at least 1 goalkeeper in the team",
+            color="warning"
+        )
+    
+    # Remove player from team
+    team_df = team_df[team_df['id'] != player_id]
+    
+    # Rebuild team structure
+    new_team_data = {'team': []}
+    for position in ['GK', 'DEF', 'MID', 'FWD']:
+        pos_players = team_df[team_df['position'] == position]
+        if not pos_players.empty:
+            new_team_data['team'].append({
+                'position': position,
+                'players': [
+                    {
+                        'id': int(row['id']),
+                        'name': row['name'],
+                        'team': int(row['team']),
+                        'is_starter': bool(row['is_starter'])
+                    }
+                    for _, row in pos_players.iterrows()
+                ]
+            })
+    
+    message = dbc.Alert(
+        f"🗑️ Removed {player_to_remove['name']} ({player_to_remove['position']}) from team | New squad size: {len(team_df)}/15",
+        color="info"
+    )
+    
+    return new_team_data, message
+
+@callback(
+    Output('team-store', 'data', allow_duplicate=True),
+    Output('add-message', 'children'),
+    Input('add-button', 'n_clicks'),
+    State('player-to-add-dropdown', 'value'),
+    State('team-store', 'data'),
+    prevent_initial_call=True
+)
+def add_player(n_clicks, player_id, team_data):
+    """Add a new player to the team."""
+    if not n_clicks or not player_id:
+        return team_data, ""
+    
+    team_df = team_json_to_dataframe(team_data)
+    player_to_add = all_players[all_players['id'] == player_id].iloc[0]
+    
+    # Validate budget
+    new_total_cost = team_df['price'].sum() + player_to_add['price']
+    if new_total_cost > BUDGET:
+        return team_data, dbc.Alert(
+            f"⚠️ Cannot add player: Would exceed budget by £{new_total_cost - BUDGET:.1f}m",
+            color="warning"
+        )
+    
+    # Validate position limits
+    position_counts = team_df['position'].value_counts().to_dict()
+    new_count = position_counts.get(player_to_add['position'], 0) + 1
+    
+    if new_count > POSITION_LIMITS[player_to_add['position']]:
+        return team_data, dbc.Alert(
+            f"⚠️ Cannot add player: Would have {new_count} {player_to_add['position']} players (max {POSITION_LIMITS[player_to_add['position']]})",
+            color="warning"
+        )
+    
+    # Validate team constraint
+    team_counts = team_df['team'].value_counts().to_dict()
+    new_team_count = team_counts.get(player_to_add['team'], 0) + 1
+    
+    if new_team_count > 3:
+        return team_data, dbc.Alert(
+            f"⚠️ Cannot add player: Would have {new_team_count} players from {team_id_to_name.get(player_to_add['team'], 'team')} (max 3 per team)",
+            color="warning"
+        )
+    
+    # Validate squad size
+    if len(team_df) >= 15:
+        return team_data, dbc.Alert(
+            "⚠️ Cannot add player: Squad is already full (15/15 players)",
+            color="warning"
+        )
+    
+    # Add player to team
+    new_player_row = {
+        'id': int(player_to_add['id']),
+        'name': player_to_add['name'],
+        'position': player_to_add['position'],
+        'team': int(player_to_add['team']),
+        'team_name': team_id_to_name.get(player_to_add['team'], f"Team {player_to_add['team']}"),
+        'price': player_to_add['price'],
+        'predicted_points': player_to_add['predicted_points'],
+        'is_starter': False  # New players start on bench
+    }
+    team_df = pd.concat([team_df, pd.DataFrame([new_player_row])], ignore_index=True)
+    
+    # Rebuild team structure
+    new_team_data = {'team': []}
+    for position in ['GK', 'DEF', 'MID', 'FWD']:
+        pos_players = team_df[team_df['position'] == position]
+        if not pos_players.empty:
+            new_team_data['team'].append({
+                'position': position,
+                'players': [
+                    {
+                        'id': int(row['id']),
+                        'name': row['name'],
+                        'team': int(row['team']),
+                        'is_starter': bool(row['is_starter'])
+                    }
+                    for _, row in pos_players.iterrows()
+                ]
+            })
+    
+    message = dbc.Alert(
+        f"✅ Added {player_to_add['name']} ({player_to_add['position']}) - £{player_to_add['price']:.1f}m | New squad size: {len(team_df)}/15",
         color="success"
     )
     
