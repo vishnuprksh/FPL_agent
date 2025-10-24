@@ -27,6 +27,12 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 db = FPLDatabase(DB_PATH)
 all_players = db.load_player_data()
 
+# Load team names mapping
+with db.get_connection() as conn:
+    teams_df = pd.read_sql_query("SELECT DISTINCT team, team_name FROM elements ORDER BY team", conn)
+    team_id_to_name = dict(zip(teams_df['team'], teams_df['team_name']))
+    team_name_to_id = dict(zip(teams_df['team_name'], teams_df['team']))
+
 # Default team
 def get_default_team():
     """Return default team structure."""
@@ -84,6 +90,7 @@ def team_json_to_dataframe(team_json):
                     'name': player_row['name'],
                     'position': position,
                     'team': player_row['team'],
+                    'team_name': team_id_to_name.get(player_row['team'], f"Team {player_row['team']}"),
                     'price': player_row['price'],
                     'predicted_points': player_row['predicted_points'],
                     'is_starter': player.get('is_starter', True)
@@ -126,8 +133,9 @@ app.layout = dbc.Container([
                 ], width=6)
             ]),
             dbc.Button("Replace Player", id='replace-button', color="primary", className="mt-3 me-2"),
-            dbc.Button("Reset to Default Team", id='reset-button', color="secondary", className="mt-3"),
-            html.Div(id='edit-message', className="mt-2")
+            dbc.Button("Save Team to Database", id='save-team-button', color="info", className="mt-3"),
+            html.Div(id='edit-message', className="mt-2"),
+            html.Div(id='save-message', className="mt-2")
         ], width=12)
     ]),
     
@@ -174,7 +182,7 @@ def update_team_display(team_data):
                 data=pos_df.to_dict('records'),
                 columns=[
                     {'name': 'Name', 'id': 'name'},
-                    {'name': 'Team', 'id': 'team'},
+                    {'name': 'Team', 'id': 'team_name'},
                     {'name': 'Price (£m)', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
                     {'name': 'Predicted Points', 'id': 'predicted_points', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                     {'name': 'Starter', 'id': 'is_starter', 'type': 'text'}
@@ -191,8 +199,8 @@ def update_team_display(team_data):
                     'whiteSpace': 'normal'
                 },
                 style_cell_conditional=[
-                    {'if': {'column_id': 'name'}, 'width': '30%'},
-                    {'if': {'column_id': 'team'}, 'width': '15%', 'textAlign': 'center'},
+                    {'if': {'column_id': 'name'}, 'width': '25%'},
+                    {'if': {'column_id': 'team_name'}, 'width': '20%', 'textAlign': 'left'},
                     {'if': {'column_id': 'price'}, 'width': '20%', 'textAlign': 'right'},
                     {'if': {'column_id': 'predicted_points'}, 'width': '25%', 'textAlign': 'right'},
                     {'if': {'column_id': 'is_starter'}, 'width': '10%', 'textAlign': 'center'}
@@ -241,7 +249,7 @@ def update_replacement_options(selected_player_id, team_data):
     
     replacement_options = [
         {
-            'label': f"{row['name']} (Team {row['team']}) - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
+            'label': f"{row['name']} ({team_id_to_name.get(row['team'], 'Unknown')}) - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
             'value': row['id']
         }
         for _, row in available.head(50).iterrows()
@@ -312,15 +320,70 @@ def replace_player(n_clicks, old_player_id, new_player_id, team_data):
     return new_team_data, message
 
 @callback(
-    Output('team-store', 'data', allow_duplicate=True),
-    Input('reset-button', 'n_clicks'),
+    Output('save-message', 'children'),
+    Input('save-team-button', 'n_clicks'),
+    State('team-store', 'data'),
     prevent_initial_call=True
 )
-def reset_team(n_clicks):
-    """Reset team to default."""
-    if not n_clicks:
-        return dash.no_update
-    return get_default_team()
+def save_team_to_db(n_clicks, team_data):
+    """Save current team to database."""
+    if not n_clicks or not team_data:
+        return ""
+    
+    try:
+        from datetime import datetime
+        import sqlite3
+        
+        team_df = team_json_to_dataframe(team_data)
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Create saved_teams table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS saved_teams (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_id INTEGER,
+                    player_name TEXT,
+                    position TEXT,
+                    team_id INTEGER,
+                    team_name TEXT,
+                    price REAL,
+                    predicted_points REAL,
+                    is_starter BOOLEAN,
+                    saved_at TIMESTAMP,
+                    team_cost REAL,
+                    team_points REAL
+                )
+            """)
+            
+            total_cost = team_df['price'].sum()
+            total_points = team_df[team_df['is_starter']]['predicted_points'].sum()
+            
+            # Insert team data
+            for _, row in team_df.iterrows():
+                cursor.execute("""
+                    INSERT INTO saved_teams (
+                        player_id, player_name, position, team_id, team_name,
+                        price, predicted_points, is_starter, saved_at,
+                        team_cost, team_points
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    row['id'], row['name'], row['position'], row['team'],
+                    row['team_name'], row['price'], row['predicted_points'],
+                    row['is_starter'], timestamp, total_cost, total_points
+                ))
+            
+            conn.commit()
+        
+        return dbc.Alert(
+            f"✅ Team saved successfully at {timestamp}! Total Cost: £{total_cost:.1f}m, Starting XI Points: {total_points:.2f}",
+            color="success"
+        )
+        
+    except Exception as e:
+        return dbc.Alert(f"❌ Error saving team: {str(e)}", color="danger")
 
 @callback(
     Output('optimization-results', 'children'),
@@ -352,7 +415,7 @@ def optimize_transfers(n_clicks, team_data):
                     html.H5("OUT:", className="text-danger"),
                     html.P([
                         html.Strong(f"{transfer['out']['name']}"),
-                        f" ({transfer['out']['position']}) - Team {transfer['out']['team']}",
+                        f" ({transfer['out']['position']}) - {team_id_to_name.get(transfer['out']['team'], 'Unknown')}",
                         html.Br(),
                         f"£{transfer['out']['price']:.1f}m, {transfer['out']['predicted_points']:.2f} pts"
                     ])
@@ -361,7 +424,7 @@ def optimize_transfers(n_clicks, team_data):
                     html.H5("IN:", className="text-success"),
                     html.P([
                         html.Strong(f"{transfer['in']['name']}"),
-                        f" ({transfer['in']['position']}) - Team {transfer['in']['team']}",
+                        f" ({transfer['in']['position']}) - {team_id_to_name.get(transfer['in']['team'], 'Unknown')}",
                         html.Br(),
                         f"£{transfer['in']['price']:.1f}m, {transfer['in']['predicted_points']:.2f} pts"
                     ])
