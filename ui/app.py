@@ -33,48 +33,62 @@ with db.get_connection() as conn:
     team_id_to_name = dict(zip(teams_df['team'], teams_df['team_name']))
     team_name_to_id = dict(zip(teams_df['team_name'], teams_df['team']))
 
-# Default team
-def get_default_team():
-    """Return default team structure."""
-    return {
-        "team": [
-            {
-                "position": "GK",
-                "players": [
-                    {"id": 101, "name": "Kelleher", "team": 5, "is_starter": True},
-                    {"id": 470, "name": "Dúbravka", "team": 3, "is_starter": False}
-                ]
-            },
-            {
-                "position": "DEF",
-                "players": [
-                    {"id": 113, "name": "Van den Berg", "team": 5, "is_starter": True},
-                    {"id": 403, "name": "Gvardiol", "team": 13, "is_starter": True},
-                    {"id": 568, "name": "Pedro Porro", "team": 18, "is_starter": True},
-                    {"id": 291, "name": "Tarkowski", "team": 9, "is_starter": True},
-                    {"id": 370, "name": "Frimpong", "team": 12, "is_starter": False}
-                ]
-            },
-            {
-                "position": "MID",
-                "players": [
-                    {"id": 82, "name": "Semenyo", "team": 4, "is_starter": True},
-                    {"id": 580, "name": "Johnson", "team": 18, "is_starter": True},
-                    {"id": 384, "name": "Gakpo", "team": 12, "is_starter": True},
-                    {"id": 582, "name": "Kudus", "team": 18, "is_starter": True},
-                    {"id": 325, "name": "Smith Rowe", "team": 10, "is_starter": False}
-                ]
-            },
-            {
-                "position": "FWD",
-                "players": [
-                    {"id": 430, "name": "Haaland", "team": 13, "is_starter": True},
-                    {"id": 525, "name": "Wood", "team": 16, "is_starter": True},
-                    {"id": 311, "name": "Beto", "team": 9, "is_starter": False}
-                ]
-            }
-        ]
-    }
+# Load team from database
+def load_team_from_db():
+    """Load current team from database or return empty team structure."""
+    try:
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if current_team table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='current_team'
+            """)
+            
+            if not cursor.fetchone():
+                return {"team": []}
+            
+            # Load team data
+            team_df = pd.read_sql_query("""
+                SELECT player_id, player_name, position, team_id, is_starter
+                FROM current_team
+                ORDER BY 
+                    CASE position 
+                        WHEN 'GK' THEN 1 
+                        WHEN 'DEF' THEN 2 
+                        WHEN 'MID' THEN 3 
+                        WHEN 'FWD' THEN 4 
+                    END,
+                    is_starter DESC
+            """, conn)
+            
+            if team_df.empty:
+                return {"team": []}
+            
+            # Convert to team structure
+            team_structure = {"team": []}
+            for position in ['GK', 'DEF', 'MID', 'FWD']:
+                pos_players = team_df[team_df['position'] == position]
+                if not pos_players.empty:
+                    team_structure["team"].append({
+                        "position": position,
+                        "players": [
+                            {
+                                "id": int(row['player_id']),
+                                "name": row['player_name'],
+                                "team": int(row['team_id']),
+                                "is_starter": bool(row['is_starter'])
+                            }
+                            for _, row in pos_players.iterrows()
+                        ]
+                    })
+            
+            return team_structure
+            
+    except Exception as e:
+        print(f"Error loading team from database: {e}")
+        return {"team": []}
 
 def team_json_to_dataframe(team_json):
     """Convert team JSON to DataFrame with enriched data."""
@@ -107,7 +121,8 @@ app.layout = dbc.Container([
     ]),
     
     # Store for team data
-    dcc.Store(id='team-store', data=get_default_team()),
+    dcc.Store(id='team-store', data=load_team_from_db()),
+    dcc.Interval(id='interval-reload', interval=1000, n_intervals=0, max_intervals=1),
     
     # Team Display Section
     dbc.Row([
@@ -149,6 +164,15 @@ app.layout = dbc.Container([
         ], width=12)
     ])
 ], fluid=True, className="p-4")
+
+@callback(
+    Output('team-store', 'data', allow_duplicate=True),
+    Input('interval-reload', 'n_intervals'),
+    prevent_initial_call='initial_duplicate'
+)
+def reload_team_on_startup(n):
+    """Reload team from database when page loads or refreshes."""
+    return load_team_from_db()
 
 @callback(
     Output('team-summary', 'children'),
@@ -244,15 +268,15 @@ def update_replacement_options(selected_player_id, team_data):
         (~all_players['id'].isin(current_team_ids))
     ].copy()
     
-    # Sort by predicted points
-    available = available.sort_values('predicted_points', ascending=False)
+    # Sort by price
+    available = available.sort_values('price', ascending=True)
     
     replacement_options = [
         {
             'label': f"{row['name']} ({team_id_to_name.get(row['team'], 'Unknown')}) - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
             'value': row['id']
         }
-        for _, row in available.head(50).iterrows()
+        for _, row in available.iterrows()
     ]
     
     return replacement_options
@@ -340,9 +364,9 @@ def save_team_to_db(n_clicks, team_data):
         with db.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Create saved_teams table if it doesn't exist
+            # Create current_team table if it doesn't exist
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS saved_teams (
+                CREATE TABLE IF NOT EXISTS current_team (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     player_id INTEGER,
                     player_name TEXT,
@@ -361,10 +385,13 @@ def save_team_to_db(n_clicks, team_data):
             total_cost = team_df['price'].sum()
             total_points = team_df[team_df['is_starter']]['predicted_points'].sum()
             
-            # Insert team data
+            # Delete existing team data
+            cursor.execute("DELETE FROM current_team")
+            
+            # Insert new team data
             for _, row in team_df.iterrows():
                 cursor.execute("""
-                    INSERT INTO saved_teams (
+                    INSERT INTO current_team (
                         player_id, player_name, position, team_id, team_name,
                         price, predicted_points, is_starter, saved_at,
                         team_cost, team_points

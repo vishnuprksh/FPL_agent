@@ -1,0 +1,3 @@
+-- database: ./fpl_agent.db
+
+DROP TABLE saved_teams;
