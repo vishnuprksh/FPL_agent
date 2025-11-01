@@ -347,3 +347,27 @@ class FPLDatabase:
             return int(value)
         except (ValueError, TypeError):
             return None
+    
+    def update_current_team_with_latest_data(self) -> None:
+        """Update current_team table with latest price and predicted points from elements table."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Update price and predicted_points for existing current_team players
+            cursor.execute("""
+                UPDATE current_team 
+                SET 
+                    price = (SELECT now_cost / 10.0 FROM elements WHERE elements.id = current_team.player_id),
+                    predicted_points = (SELECT ep_this FROM elements WHERE elements.id = current_team.player_id)
+                WHERE player_id IN (SELECT id FROM elements)
+            """)
+            
+            # Recalculate and update team_cost and team_points for all records
+            cursor.execute("""
+                UPDATE current_team 
+                SET 
+                    team_cost = (SELECT SUM(price) FROM current_team),
+                    team_points = (SELECT SUM(predicted_points) FROM current_team WHERE is_starter = 1)
+            """)
+            
+            conn.commit()

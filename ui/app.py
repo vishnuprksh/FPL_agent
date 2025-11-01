@@ -14,6 +14,7 @@ from dash import dcc, html, dash_table, Input, Output, State, callback, ALL
 import dash_bootstrap_components as dbc
 import pandas as pd
 from fpl_agent import FPLTransferOptimizer, FPLDatabase
+import argparse
 
 # Constants
 DB_PATH = "/workspaces/FPL_agent/data/fpl_agent.db"
@@ -685,4 +686,8 @@ def optimize_transfers(n_clicks, team_data):
         return dbc.Alert(f"❌ Error: {str(e)}", color="danger")
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8050)
+    parser = argparse.ArgumentParser(description='Run FPL Transfer Optimizer UI')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    args = parser.parse_args()
+    
+    app.run(debug=args.debug, host='0.0.0.0', port=8050)

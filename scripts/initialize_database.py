@@ -30,6 +30,9 @@ def main():
     teams = fpl_data.get('teams', [])
     db.insert_elements_data(elements, teams)
     
+    print("Updating current team with latest data...")
+    db.update_current_team_with_latest_data()
+    
     print(f"Successfully loaded {len(elements)} players to {db_path}")
 
 
