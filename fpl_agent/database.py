@@ -664,3 +664,31 @@ class FPLDatabase:
         
         with self.get_connection() as conn:
             return pd.read_sql_query(query, conn, params=params)
+    
+    def load_top_performers_for_weeks(self, num_weeks: int = 3) -> pd.DataFrame:
+        """Load top performers for the next N weeks based on predicted points."""
+        query = """
+        WITH next_gameweeks AS (
+            SELECT DISTINCT gameweek
+            FROM final_predictions
+            ORDER BY gameweek
+            LIMIT ?
+        )
+        SELECT 
+            e.web_name as name,
+            e.element_type_name as position,
+            t.name as team,
+            SUM(fp.predicted_points) as predicted_points
+        FROM final_predictions fp
+        JOIN elements e ON fp.player_id = e.id
+        JOIN teams t ON e.team = t.id
+        WHERE fp.gameweek IN (SELECT gameweek FROM next_gameweeks)
+        AND e.can_select = 1
+        GROUP BY fp.player_id, e.web_name, e.element_type_name, t.name
+        ORDER BY predicted_points DESC
+        """
+        
+        with self.get_connection() as conn:
+            df = pd.read_sql_query(query, conn, params=(num_weeks,))
+        
+        return df

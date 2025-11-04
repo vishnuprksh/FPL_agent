@@ -91,10 +91,11 @@ class FPLFormatter:
         return "\n".join(output)
     
     @staticmethod
-    def format_top_performers(df, positions=['GK', 'DEF', 'MID', 'FWD'], top_n=3) -> str:
+    def format_top_performers(df, positions=['GK', 'DEF', 'MID', 'FWD'], top_n=3, weeks=1) -> str:
         """Format top performers by position."""
+        period = f"Next {weeks} Weeks" if weeks > 1 else "This Week"
         output = []
-        output.append(f"Top {top_n} Performers by Position (This Week)")
+        output.append(f"Top {top_n} Performers by Position ({period})")
         output.append("=" * 50)
         
         for pos in positions:
