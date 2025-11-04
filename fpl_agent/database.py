@@ -371,3 +371,137 @@ class FPLDatabase:
             """)
             
             conn.commit()
+    
+    def create_player_gameweek_history_table(self) -> None:
+        """Create table for storing historic gameweek data."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Create table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS player_gameweek_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    season TEXT NOT NULL,
+                    gw INTEGER NOT NULL,
+                    element INTEGER NOT NULL,
+                    name TEXT,
+                    position TEXT,
+                    team TEXT,
+                    xP REAL,
+                    assists INTEGER,
+                    bonus INTEGER,
+                    bps INTEGER,
+                    clean_sheets INTEGER,
+                    clearances_blocks_interceptions INTEGER,
+                    creativity REAL,
+                    defensive_contribution INTEGER,
+                    expected_assists REAL,
+                    expected_goal_involvements REAL,
+                    expected_goals REAL,
+                    expected_goals_conceded REAL,
+                    fixture INTEGER,
+                    goals_conceded INTEGER,
+                    goals_scored INTEGER,
+                    ict_index REAL,
+                    influence REAL,
+                    kickoff_time TEXT,
+                    minutes INTEGER,
+                    modified BOOLEAN,
+                    opponent_team INTEGER,
+                    own_goals INTEGER,
+                    penalties_missed INTEGER,
+                    penalties_saved INTEGER,
+                    recoveries INTEGER,
+                    red_cards INTEGER,
+                    round INTEGER,
+                    saves INTEGER,
+                    selected INTEGER,
+                    starts INTEGER,
+                    tackles INTEGER,
+                    team_a_score INTEGER,
+                    team_h_score INTEGER,
+                    threat REAL,
+                    total_points INTEGER,
+                    transfers_balance INTEGER,
+                    transfers_in INTEGER,
+                    transfers_out INTEGER,
+                    value REAL,
+                    was_home BOOLEAN,
+                    yellow_cards INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(season, gw, element, fixture)
+                )
+            """)
+            
+            # Create index for faster queries
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_player_gw 
+                ON player_gameweek_history(element, season, gw)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_season_gw 
+                ON player_gameweek_history(season, gw)
+            """)
+            
+            conn.commit()
+    
+    def insert_gameweek_data(self, season: str, gw: int, df: pd.DataFrame) -> int:
+        """Insert gameweek data from DataFrame into database.
+        
+        Args:
+            season: Season identifier (e.g., '2025-26')
+            gw: Gameweek number
+            df: DataFrame containing gameweek data
+            
+        Returns:
+            Number of rows inserted
+        """
+        # Add season and gw columns
+        df['season'] = season
+        df['gw'] = gw
+        
+        with self.get_connection() as conn:
+            # Insert data, replacing duplicates
+            df.to_sql(
+                'player_gameweek_history', 
+                conn, 
+                if_exists='append', 
+                index=False,
+                method='multi'
+            )
+            
+            # Get count of records for this season/gw
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT COUNT(*) FROM player_gameweek_history 
+                WHERE season = ? AND gw = ?
+            """, (season, gw))
+            count = cursor.fetchone()[0]
+            
+            return count
+    
+    def get_player_gameweek_history(self, element_id: int, season: str = None) -> pd.DataFrame:
+        """Get gameweek history for a specific player.
+        
+        Args:
+            element_id: Player ID
+            season: Optional season filter
+            
+        Returns:
+            DataFrame with player's gameweek history
+        """
+        query = """
+            SELECT * FROM player_gameweek_history
+            WHERE element = ?
+        """
+        params = [element_id]
+        
+        if season:
+            query += " AND season = ?"
+            params.append(season)
+        
+        query += " ORDER BY season, gw"
+        
+        with self.get_connection() as conn:
+            return pd.read_sql_query(query, conn, params=params)

@@ -124,6 +124,7 @@ app.layout = dbc.Container([
     # Store for team data
     dcc.Store(id='team-store', data=load_team_from_db()),
     dcc.Interval(id='interval-reload', interval=1000, n_intervals=0, max_intervals=1),
+    dcc.Store(id='copy-notification', data=''),
     
     # Team Display Section
     dbc.Row([
@@ -134,10 +135,10 @@ app.layout = dbc.Container([
         ], width=12)
     ]),
     
-    # Edit Team Section
+    # Replace Player Section
     dbc.Row([
         dbc.Col([
-            html.H3("Modify Team", className="mt-4 mb-3"),
+            html.H3("Replace Player", className="mt-4 mb-3"),
             dbc.Row([
                 dbc.Col([
                     html.Label("Select Player to Replace:"),
@@ -148,25 +149,55 @@ app.layout = dbc.Container([
                     dcc.Dropdown(id='replacement-player-dropdown', placeholder="Select replacement...")
                 ], width=6)
             ]),
-            dbc.Button("Replace Player", id='replace-button', color="primary", className="mt-3 me-2"),
-            dbc.Button("Remove Player", id='remove-button', color="danger", className="mt-3 me-2"),
-            dbc.Button("Save Team to Database", id='save-team-button', color="info", className="mt-3"),
-            html.Div(id='edit-message', className="mt-2"),
-            html.Div(id='remove-message', className="mt-2"),
-            html.Div(id='save-message', className="mt-2"),
-            
-            html.Hr(className="my-4"),
-            
+            dbc.Button("Replace Player", id='replace-button', color="primary", className="mt-3"),
+            html.Div(id='edit-message', className="mt-2")
+        ], width=12)
+    ]),
+    
+    # Substitute Player Section
+    dbc.Row([
+        dbc.Col([
+            html.H3("Substitute Player", className="mt-4 mb-3"),
             dbc.Row([
                 dbc.Col([
-                    html.Label("Add New Player:"),
-                    dcc.Dropdown(id='player-to-add-dropdown', placeholder="Select player to add...")
-                ], width=8),
+                    html.Label("Remove from Starting XI:"),
+                    dcc.Dropdown(id='player-to-bench-dropdown', placeholder="Select starting player...")
+                ], width=6),
                 dbc.Col([
-                    dbc.Button("Add Player", id='add-button', color="success", className="mt-4"),
-                ], width=4)
+                    html.Label("Add to Starting XI:"),
+                    dcc.Dropdown(id='player-to-start-dropdown', placeholder="Select bench player...")
+                ], width=6)
             ]),
-            html.Div(id='add-message', className="mt-2")
+            dbc.Button("Substitute Player", id='substitute-button', color="warning", className="mt-3"),
+            html.Div(id='substitute-message', className="mt-2")
+        ], width=12)
+    ]),
+    
+    # Save Section
+    dbc.Row([
+        dbc.Col([
+            html.Hr(className="my-4"),
+            dbc.Button("Save Team to Database", id='save-team-button', color="info", size="lg", className="w-100"),
+            html.Div(id='save-message', className="mt-3")
+        ], width=12)
+    ]),
+    
+    # LLM Analysis Section
+    dbc.Row([
+        dbc.Col([
+            html.Hr(),
+            html.H3("AI-Powered Team Analysis", className="mb-3"),
+            html.P("Copy the prompt with your team data to use with your favourite LLM (ChatGPT, Claude, etc.)", className="text-muted"),
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Prompt + Team Data (Ready to Copy):", className="fw-bold"),
+                    dcc.Textarea(
+                        id='llm-combined-export',
+                        placeholder="Combined prompt and team data will appear here...",
+                        style={'width': '100%', 'height': '400px', 'fontFamily': 'monospace', 'fontSize': '12px'}
+                    )
+                ], width=12)
+            ])
         ], width=12)
     ]),
     
@@ -174,7 +205,7 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
             html.Hr(),
-            html.H3("Transfer Optimization", className="mb-3"),
+            html.H3("Transfer Suggestions", className="mb-3"),
             dbc.Button("Optimize Transfers", id='optimize-button', color="success", size="lg", className="mb-3"),
             html.Div(id='optimization-results')
         ], width=12)
@@ -194,12 +225,14 @@ def reload_team_on_startup(n):
     Output('team-summary', 'children'),
     Output('team-display', 'children'),
     Output('player-to-replace-dropdown', 'options'),
+    Output('player-to-bench-dropdown', 'options'),
+    Output('player-to-start-dropdown', 'options'),
     Input('team-store', 'data')
 )
 def update_team_display(team_data):
     """Update the team display when team data changes."""
     if not team_data:
-        return "", "", []
+        return "", "", [], [], []
     
     team_df = team_json_to_dataframe(team_data)
     total_cost = team_df['price'].sum()
@@ -256,23 +289,34 @@ def update_team_display(team_data):
             ))
     
     # Dropdown options for player replacement
-    player_options = [
+    all_player_options = [
         {'label': f"{row['name']} ({row['position']}) - £{row['price']:.1f}m", 'value': row['id']}
         for _, row in team_df.iterrows()
     ]
     
-    return summary, html.Div(tables), player_options
+    # Dropdown options for starting XI players (to bench)
+    starting_players = [
+        {'label': f"{row['name']} ({row['position']}) - £{row['price']:.1f}m", 'value': row['id']}
+        for _, row in team_df[team_df['is_starter']].iterrows()
+    ]
+    
+    # Dropdown options for bench players (to start)
+    bench_players = [
+        {'label': f"{row['name']} ({row['position']}) - £{row['price']:.1f}m", 'value': row['id']}
+        for _, row in team_df[~team_df['is_starter']].iterrows()
+    ]
+    
+    return summary, html.Div(tables), all_player_options, starting_players, bench_players
 
 @callback(
     Output('replacement-player-dropdown', 'options'),
-    Output('player-to-add-dropdown', 'options'),
     Input('player-to-replace-dropdown', 'value'),
     State('team-store', 'data')
 )
 def update_replacement_options(selected_player_id, team_data):
     """Update replacement dropdown to show all available players from any position."""
     if not team_data:
-        return [], []
+        return []
     
     team_df = team_json_to_dataframe(team_data)
     current_team_ids = team_df['id'].tolist()
@@ -293,8 +337,7 @@ def update_replacement_options(selected_player_id, team_data):
         for _, row in available.iterrows()
     ]
     
-    # Same options for adding players
-    return replacement_options, replacement_options
+    return replacement_options
 
 @callback(
     Output('team-store', 'data', allow_duplicate=True),
@@ -395,33 +438,43 @@ def replace_player(n_clicks, old_player_id, new_player_id, team_data):
 
 @callback(
     Output('team-store', 'data', allow_duplicate=True),
-    Output('remove-message', 'children'),
-    Input('remove-button', 'n_clicks'),
-    State('player-to-replace-dropdown', 'value'),
+    Output('substitute-message', 'children'),
+    Input('substitute-button', 'n_clicks'),
+    State('player-to-bench-dropdown', 'value'),
+    State('player-to-start-dropdown', 'value'),
     State('team-store', 'data'),
     prevent_initial_call=True
 )
-def remove_player(n_clicks, player_id, team_data):
-    """Remove a player from the team temporarily."""
-    if not n_clicks or not player_id:
+def substitute_player(n_clicks, starter_id, bench_id, team_data):
+    """Substitute a starting player with a bench player, allowing cross-position subs if restrictions allow."""
+    if not n_clicks or not starter_id or not bench_id:
         return team_data, ""
     
     team_df = team_json_to_dataframe(team_data)
-    player_to_remove = team_df[team_df['id'] == player_id].iloc[0]
+    starter = team_df[team_df['id'] == starter_id].iloc[0]
+    bench = team_df[team_df['id'] == bench_id].iloc[0]
     
-    # Check minimum position requirements
-    position_counts = team_df['position'].value_counts().to_dict()
-    new_count = position_counts.get(player_to_remove['position'], 0) - 1
-    
-    # GK must have at least 1, others can go to 0
-    if player_to_remove['position'] == 'GK' and new_count < 1:
+    # Verify one is starter and one is bench
+    if not starter['is_starter']:
         return team_data, dbc.Alert(
-            "⚠️ Cannot remove player: Must have at least 1 goalkeeper in the team",
+            "⚠️ Player selected for benching is not in the starting XI",
             color="warning"
         )
     
-    # Remove player from team
-    team_df = team_df[team_df['id'] != player_id]
+    if bench['is_starter']:
+        return team_data, dbc.Alert(
+            "⚠️ Player selected to start is already in the starting XI",
+            color="warning"
+        )
+    
+    # No position limit validation needed for substitution (same players stay on team)
+    # Only starter status changes, not positions or total count
+    
+    # Swap starter status between the two players
+    starter_status = team_df.loc[team_df['id'] == starter_id, 'is_starter'].values[0]
+    bench_status = team_df.loc[team_df['id'] == bench_id, 'is_starter'].values[0]
+    team_df.loc[team_df['id'] == starter_id, 'is_starter'] = bench_status
+    team_df.loc[team_df['id'] == bench_id, 'is_starter'] = starter_status
     
     # Rebuild team structure
     new_team_data = {'team': []}
@@ -442,96 +495,7 @@ def remove_player(n_clicks, player_id, team_data):
             })
     
     message = dbc.Alert(
-        f"🗑️ Removed {player_to_remove['name']} ({player_to_remove['position']}) from team | New squad size: {len(team_df)}/15",
-        color="info"
-    )
-    
-    return new_team_data, message
-
-@callback(
-    Output('team-store', 'data', allow_duplicate=True),
-    Output('add-message', 'children'),
-    Input('add-button', 'n_clicks'),
-    State('player-to-add-dropdown', 'value'),
-    State('team-store', 'data'),
-    prevent_initial_call=True
-)
-def add_player(n_clicks, player_id, team_data):
-    """Add a new player to the team."""
-    if not n_clicks or not player_id:
-        return team_data, ""
-    
-    team_df = team_json_to_dataframe(team_data)
-    player_to_add = all_players[all_players['id'] == player_id].iloc[0]
-    
-    # Validate budget
-    new_total_cost = team_df['price'].sum() + player_to_add['price']
-    if new_total_cost > BUDGET:
-        return team_data, dbc.Alert(
-            f"⚠️ Cannot add player: Would exceed budget by £{new_total_cost - BUDGET:.1f}m",
-            color="warning"
-        )
-    
-    # Validate position limits
-    position_counts = team_df['position'].value_counts().to_dict()
-    new_count = position_counts.get(player_to_add['position'], 0) + 1
-    
-    if new_count > POSITION_LIMITS[player_to_add['position']]:
-        return team_data, dbc.Alert(
-            f"⚠️ Cannot add player: Would have {new_count} {player_to_add['position']} players (max {POSITION_LIMITS[player_to_add['position']]})",
-            color="warning"
-        )
-    
-    # Validate team constraint
-    team_counts = team_df['team'].value_counts().to_dict()
-    new_team_count = team_counts.get(player_to_add['team'], 0) + 1
-    
-    if new_team_count > 3:
-        return team_data, dbc.Alert(
-            f"⚠️ Cannot add player: Would have {new_team_count} players from {team_id_to_name.get(player_to_add['team'], 'team')} (max 3 per team)",
-            color="warning"
-        )
-    
-    # Validate squad size
-    if len(team_df) >= 15:
-        return team_data, dbc.Alert(
-            "⚠️ Cannot add player: Squad is already full (15/15 players)",
-            color="warning"
-        )
-    
-    # Add player to team
-    new_player_row = {
-        'id': int(player_to_add['id']),
-        'name': player_to_add['name'],
-        'position': player_to_add['position'],
-        'team': int(player_to_add['team']),
-        'team_name': team_id_to_name.get(player_to_add['team'], f"Team {player_to_add['team']}"),
-        'price': player_to_add['price'],
-        'predicted_points': player_to_add['predicted_points'],
-        'is_starter': False  # New players start on bench
-    }
-    team_df = pd.concat([team_df, pd.DataFrame([new_player_row])], ignore_index=True)
-    
-    # Rebuild team structure
-    new_team_data = {'team': []}
-    for position in ['GK', 'DEF', 'MID', 'FWD']:
-        pos_players = team_df[team_df['position'] == position]
-        if not pos_players.empty:
-            new_team_data['team'].append({
-                'position': position,
-                'players': [
-                    {
-                        'id': int(row['id']),
-                        'name': row['name'],
-                        'team': int(row['team']),
-                        'is_starter': bool(row['is_starter'])
-                    }
-                    for _, row in pos_players.iterrows()
-                ]
-            })
-    
-    message = dbc.Alert(
-        f"✅ Added {player_to_add['name']} ({player_to_add['position']}) - £{player_to_add['price']:.1f}m | New squad size: {len(team_df)}/15",
+        f"✅ Substituted {starter['name']} with {bench['name']} in starting XI",
         color="success"
     )
     
@@ -613,7 +577,7 @@ def save_team_to_db(n_clicks, team_data):
     prevent_initial_call=True
 )
 def optimize_transfers(n_clicks, team_data):
-    """Run transfer optimization on current team."""
+    """Run transfer optimization on current team to get top 5 transfers."""
     if not n_clicks:
         return ""
     
@@ -623,67 +587,91 @@ def optimize_transfers(n_clicks, team_data):
         
         if result['no_transfer_recommended']:
             return dbc.Alert([
-                html.H4("🚫 No Transfer Recommended", className="mb-3"),
+                html.H4("🚫 No Transfers Recommended", className="mb-3"),
                 html.P("Your current team is already optimal or no beneficial transfers available within budget.")
             ], color="info")
         
-        transfer = result['best_transfer']
+        transfers = result['best_transfers']
+        transfer_cards = []
         
-        return dbc.Alert([
-            html.H4("✅ Recommended Transfer", className="mb-3"),
-            dbc.Row([
-                dbc.Col([
-                    html.H5("OUT:", className="text-danger"),
-                    html.P([
-                        html.Strong(f"{transfer['out']['name']}"),
-                        f" ({transfer['out']['position']}) - {team_id_to_name.get(transfer['out']['team'], 'Unknown')}",
-                        html.Br(),
-                        f"£{transfer['out']['price']:.1f}m, {transfer['out']['predicted_points']:.2f} pts"
+        for idx, transfer in enumerate(transfers, 1):
+            card = dbc.Card([
+                dbc.CardHeader(f"Transfer #{idx}", className="bg-primary text-white"),
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            html.H6("OUT:", className="text-danger fw-bold"),
+                            html.P([
+                                html.Strong(f"{transfer['out']['name']}"),
+                                html.Br(),
+                                f"({transfer['out']['position']}) - {team_id_to_name.get(transfer['out']['team'], 'Unknown')}",
+                                html.Br(),
+                                f"£{transfer['out']['price']:.1f}m, {transfer['out']['predicted_points']:.2f} pts"
+                            ], className="mb-0 small")
+                        ], width=6),
+                        dbc.Col([
+                            html.H6("IN:", className="text-success fw-bold"),
+                            html.P([
+                                html.Strong(f"{transfer['in']['name']}"),
+                                html.Br(),
+                                f"({transfer['in']['position']}) - {team_id_to_name.get(transfer['in']['team'], 'Unknown')}",
+                                html.Br(),
+                                f"£{transfer['in']['price']:.1f}m, {transfer['in']['predicted_points']:.2f} pts"
+                            ], className="mb-0 small")
+                        ], width=6)
+                    ]),
+                    html.Hr(className="my-2"),
+                    dbc.Row([
+                        dbc.Col([
+                            html.P([
+                                html.Strong("💰 Cost: "),
+                                f"£{transfer['cost_change']:+.1f}m"
+                            ], className="mb-1 small")
+                        ], width=6),
+                        dbc.Col([
+                            html.P([
+                                html.Strong("📈 Gain: "),
+                                f"{transfer['points_gain']:+.2f} pts"
+                            ], className="mb-0 small")
+                        ], width=6)
                     ])
-                ], width=6),
-                dbc.Col([
-                    html.H5("IN:", className="text-success"),
-                    html.P([
-                        html.Strong(f"{transfer['in']['name']}"),
-                        f" ({transfer['in']['position']}) - {team_id_to_name.get(transfer['in']['team'], 'Unknown')}",
-                        html.Br(),
-                        f"£{transfer['in']['price']:.1f}m, {transfer['in']['predicted_points']:.2f} pts"
-                    ])
-                ], width=6)
-            ]),
-            html.Hr(),
-            dbc.Row([
-                dbc.Col([
-                    html.P([
-                        html.Strong("💰 Cost Change: "),
-                        f"£{transfer['cost_change']:+.1f}m"
-                    ])
-                ], width=6),
-                dbc.Col([
-                    html.P([
-                        html.Strong("📈 Points Gain: "),
-                        f"{transfer['points_gain']:+.2f} pts"
-                    ])
-                ], width=6)
-            ]),
-            dbc.Row([
-                dbc.Col([
-                    html.P([
-                        html.Strong("🎯 New Total Points: "),
-                        f"{transfer['new_total_points']:.2f}"
-                    ])
-                ], width=6),
-                dbc.Col([
-                    html.P([
-                        html.Strong("💵 New Total Cost: "),
-                        f"£{transfer['new_total_cost']:.1f}m"
-                    ])
-                ], width=6)
-            ])
-        ], color="success")
+                ])
+            ], className="mb-2")
+            transfer_cards.append(card)
+        
+        return dbc.Container([
+            html.H4("✅ Top 5 Transfer Recommendations", className="mb-3 text-success"),
+            html.Div(transfer_cards)
+        ], fluid=True)
         
     except Exception as e:
         return dbc.Alert(f"❌ Error: {str(e)}", color="danger")
+
+@callback(
+    Output('llm-combined-export', 'value'),
+    Input('team-store', 'data')
+)
+def update_combined_export(team_data):
+    """Update combined prompt + team data export (all players including bench)."""
+    if not team_data or not team_data.get('team'):
+        return ""
+    
+    import json
+    
+    # Include all players (starting XI and bench)
+    team_json = json.dumps(team_data, indent=2)
+    
+    prompt = """Analyse the current team for FPL,
+Based on the upcoming week fixture, fitness, player form, opponent strength, position and strategies recalculate the predicted points of the team.
+
+Based on the recalculated data, suggest top 5 changes I can do to make the team better
+
+---
+
+TEAM DATA (JSON):
+"""
+    
+    return prompt + "\n" + team_json
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run FPL Transfer Optimizer UI')

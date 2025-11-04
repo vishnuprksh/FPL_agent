@@ -23,7 +23,7 @@ class FPLTransferOptimizer:
         self.players_df = None
         
     def find_best_transfer(self, current_team_json: Dict) -> Dict:
-        """Find the best single transfer to maximize points."""
+        """Find the top 5 best transfers to maximize points."""
         # Load all available players first
         self.players_df = self.db.load_player_data()
         
@@ -42,8 +42,7 @@ class FPLTransferOptimizer:
         print(f"Current cost: £{current_cost:.1f}m")
         print(f"Available budget: £{available_budget:.1f}m")
         
-        best_transfer = None
-        best_points_gain = 0
+        transfers_list = []
         
         # Try removing each player and replacing with a better option
         for idx, current_player in current_team.iterrows():
@@ -58,9 +57,8 @@ class FPLTransferOptimizer:
             if not is_starter:
                 continue
             
-            # Find available replacements of same position
+            # Find available replacements (any position, not already in team)
             available_players = self.players_df[
-                (self.players_df['position'] == current_pos) &
                 (~self.players_df['id'].isin(current_team['id']))  # Not already in team
             ].copy()
             
@@ -76,47 +74,49 @@ class FPLTransferOptimizer:
                 temp_team = current_team.copy()
                 temp_team.loc[idx, 'id'] = replacement['id']
                 temp_team.loc[idx, 'name'] = replacement['name']
+                temp_team.loc[idx, 'position'] = replacement['position']
                 temp_team.loc[idx, 'team'] = replacement['team']
                 temp_team.loc[idx, 'price'] = replacement['price']
                 temp_team.loc[idx, 'predicted_points'] = replacement['predicted_points']
                 
-                # Check team constraint (max 3 from same team)
-                if replacement['team'] != current_team_name:
-                    team_counts = temp_team['team'].value_counts()
-                    if team_counts.get(replacement['team'], 0) > 3:
-                        continue
+                # Check that team constraints are still met
+                if not self.validator.validate_team_constraints(temp_team):
+                    continue
                 
                 # Calculate points improvement
                 points_gain = replacement['predicted_points'] - current_pred_points
                 
-                if points_gain > best_points_gain:
-                    best_points_gain = points_gain
-                    best_transfer = {
-                        'out': {
-                            'id': current_id,
-                            'name': current_player['name'],
-                            'position': current_pos,
-                            'team': current_team_name,
-                            'price': current_price,
-                            'predicted_points': current_pred_points
-                        },
-                        'in': {
-                            'id': replacement['id'],
-                            'name': replacement['name'],
-                            'position': current_pos,
-                            'team': replacement['team'],
-                            'price': replacement['price'],
-                            'predicted_points': replacement['predicted_points']
-                        },
-                        'points_gain': points_gain,
-                        'cost_change': price_diff,
-                        'new_total_points': current_points + points_gain,
-                        'new_total_cost': current_cost + price_diff
-                    }
+                transfer = {
+                    'out': {
+                        'id': current_id,
+                        'name': current_player['name'],
+                        'position': current_pos,
+                        'team': current_team_name,
+                        'price': current_price,
+                        'predicted_points': current_pred_points
+                    },
+                    'in': {
+                        'id': replacement['id'],
+                        'name': replacement['name'],
+                        'position': current_pos,
+                        'team': replacement['team'],
+                        'price': replacement['price'],
+                        'predicted_points': replacement['predicted_points']
+                    },
+                    'points_gain': points_gain,
+                    'cost_change': price_diff,
+                    'new_total_points': current_points + points_gain,
+                    'new_total_cost': current_cost + price_diff
+                }
+                transfers_list.append(transfer)
+        
+        # Sort by points gain in descending order and take top 5
+        transfers_list.sort(key=lambda x: x['points_gain'], reverse=True)
+        top_5_transfers = transfers_list[:5]
         
         return {
             'current_team_points': current_points,
             'current_team_cost': current_cost,
-            'best_transfer': best_transfer,
-            'no_transfer_recommended': best_transfer is None
+            'best_transfers': top_5_transfers,
+            'no_transfer_recommended': len(top_5_transfers) == 0
         }

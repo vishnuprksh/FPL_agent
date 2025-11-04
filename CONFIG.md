@@ -10,6 +10,18 @@ The FPL Agent library uses a centralized configuration system that supports:
 - Default fallback values
 - Type-safe configuration classes
 
+## Quick Start
+
+### Loading Historic Gameweek Data
+
+Before using advanced analysis features, load historic gameweek data:
+
+```bash
+python scripts/load_historic_gameweek_data.py
+```
+
+This will download and store historic performance data for all players across all completed gameweeks of the current season. See [docs/HISTORIC_DATA.md](docs/HISTORIC_DATA.md) for more details.
+
 ## Configuration Structure
 
 The configuration is organized into the following sections:
