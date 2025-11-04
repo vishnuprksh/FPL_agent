@@ -41,7 +41,7 @@ This script will:
 ```python
 from fpl_agent.database import FPLDatabase
 
-db = FPLDatabase("data/fpl.db")
+db = FPLDatabase("data/fpl_agent.db")
 
 # Get all gameweek history for a specific player
 player_history = db.get_player_gameweek_history(element_id=430)  # Erling Haaland

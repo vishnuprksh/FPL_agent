@@ -23,3 +23,15 @@ class FPLAPIClient:
                 return data
         except Exception as e:
             raise Exception(f"Failed to fetch FPL data: {e}")
+    
+    @classmethod
+    def fetch_fixtures(cls) -> list:
+        """Fetch all fixtures data from API."""
+        url = f"{cls.BASE_URL}/fixtures/"
+        
+        try:
+            with urllib.request.urlopen(url) as response:
+                data = json.loads(response.read().decode())
+                return data
+        except Exception as e:
+            raise Exception(f"Failed to fetch fixtures data: {e}")

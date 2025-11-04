@@ -372,6 +372,165 @@ class FPLDatabase:
             
             conn.commit()
     
+    def create_teams_table(self) -> None:
+        """Create teams table with all fields from teams.csv."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Drop existing table to recreate with all fields
+            cursor.execute("DROP TABLE IF EXISTS teams")
+            
+            # Create teams table with all fields from teams.csv
+            cursor.execute("""
+                CREATE TABLE teams (
+                    id INTEGER PRIMARY KEY,
+                    code INTEGER,
+                    draw INTEGER,
+                    form TEXT,
+                    loss INTEGER,
+                    name TEXT,
+                    played INTEGER,
+                    points INTEGER,
+                    position INTEGER,
+                    short_name TEXT,
+                    strength INTEGER,
+                    team_division TEXT,
+                    unavailable BOOLEAN,
+                    win INTEGER,
+                    strength_overall_home INTEGER,
+                    strength_overall_away INTEGER,
+                    strength_attack_home INTEGER,
+                    strength_attack_away INTEGER,
+                    strength_defence_home INTEGER,
+                    strength_defence_away INTEGER,
+                    pulse_id INTEGER,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            conn.commit()
+    
+    def insert_teams_data(self, teams: List[Dict]) -> None:
+        """Insert teams data into database."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clear existing data
+            cursor.execute("DELETE FROM teams")
+            
+            # Insert new data
+            for team in teams:
+                cursor.execute("""
+                    INSERT INTO teams (
+                        id, code, draw, form, loss, name, played, points, position,
+                        short_name, strength, team_division, unavailable, win,
+                        strength_overall_home, strength_overall_away,
+                        strength_attack_home, strength_attack_away,
+                        strength_defence_home, strength_defence_away, pulse_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    team['id'],
+                    team['code'],
+                    team['draw'],
+                    team.get('form', ''),
+                    team['loss'],
+                    team['name'],
+                    team['played'],
+                    team['points'],
+                    team['position'],
+                    team['short_name'],
+                    team['strength'],
+                    team.get('team_division', ''),
+                    team['unavailable'],
+                    team['win'],
+                    team['strength_overall_home'],
+                    team['strength_overall_away'],
+                    team['strength_attack_home'],
+                    team['strength_attack_away'],
+                    team['strength_defence_home'],
+                    team['strength_defence_away'],
+                    team['pulse_id']
+                ))
+            
+            conn.commit()
+    
+    def create_fixtures_table(self) -> None:
+        """Create fixtures table with all fields from fixtures.csv."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Drop existing table to recreate with all fields
+            cursor.execute("DROP TABLE IF EXISTS fixtures")
+            
+            # Create fixtures table with all fields from fixtures.csv
+            cursor.execute("""
+                CREATE TABLE fixtures (
+                    id INTEGER PRIMARY KEY,
+                    code INTEGER,
+                    event INTEGER,
+                    finished BOOLEAN,
+                    finished_provisional BOOLEAN,
+                    kickoff_time TEXT,
+                    minutes INTEGER,
+                    provisional_start_time BOOLEAN,
+                    started BOOLEAN,
+                    team_a INTEGER,
+                    team_a_score INTEGER,
+                    team_h INTEGER,
+                    team_h_score INTEGER,
+                    stats TEXT,
+                    team_h_difficulty INTEGER,
+                    team_a_difficulty INTEGER,
+                    pulse_id INTEGER,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (team_a) REFERENCES teams(id),
+                    FOREIGN KEY (team_h) REFERENCES teams(id)
+                )
+            """)
+            
+            conn.commit()
+    
+    def insert_fixtures_data(self, fixtures: List[Dict]) -> None:
+        """Insert fixtures data into database."""
+        import json
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clear existing data
+            cursor.execute("DELETE FROM fixtures")
+            
+            # Insert new data
+            for fixture in fixtures:
+                cursor.execute("""
+                    INSERT INTO fixtures (
+                        id, code, event, finished, finished_provisional,
+                        kickoff_time, minutes, provisional_start_time, started,
+                        team_a, team_a_score, team_h, team_h_score, stats,
+                        team_h_difficulty, team_a_difficulty, pulse_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    fixture['id'],
+                    fixture['code'],
+                    fixture['event'],
+                    fixture['finished'],
+                    fixture['finished_provisional'],
+                    fixture['kickoff_time'],
+                    fixture['minutes'],
+                    fixture['provisional_start_time'],
+                    fixture['started'],
+                    fixture['team_a'],
+                    fixture.get('team_a_score'),
+                    fixture['team_h'],
+                    fixture.get('team_h_score'),
+                    json.dumps(fixture.get('stats', [])),  # Store stats as JSON string
+                    fixture['team_h_difficulty'],
+                    fixture['team_a_difficulty'],
+                    fixture['pulse_id']
+                ))
+            
+            conn.commit()
+    
     def create_player_gameweek_history_table(self) -> None:
         """Create table for storing historic gameweek data."""
         with self.get_connection() as conn:

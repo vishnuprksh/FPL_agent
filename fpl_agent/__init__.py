@@ -8,6 +8,14 @@ from .validation import FPLValidator
 from .optimizer import FPLSquadOptimizer
 from .transfers import FPLTransferOptimizer
 from .formatting import FPLFormatter
+from .pipeline import (
+    FPLDataPipeline,
+    HistoricDataLoader,
+    TeamValuationCalculator,
+    PlayerMatchContextBuilder,
+    PointsPredictor,
+    FinalPredictionsGenerator
+)
 
 __all__ = [
     'FPLAPIClient',
@@ -15,5 +23,11 @@ __all__ = [
     'FPLValidator',
     'FPLSquadOptimizer',
     'FPLTransferOptimizer',
-    'FPLFormatter'
+    'FPLFormatter',
+    'FPLDataPipeline',
+    'HistoricDataLoader',
+    'TeamValuationCalculator',
+    'PlayerMatchContextBuilder',
+    'PointsPredictor',
+    'FinalPredictionsGenerator'
 ]
