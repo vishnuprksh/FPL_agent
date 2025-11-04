@@ -60,10 +60,23 @@ class TestPredictionsGenerator:
         player_data = {}
         for row in data:
             element = row[0]
+            team_attack = row[2]
+            team_defense = row[3]
+            opp_attack = row[4]
+            opp_defense = row[5]
+            was_home = row[6]
+            total_points = row[7]
+            
+            # Calculate differential features
+            attack_advantage = team_attack - opp_defense
+            defense_advantage = team_defense - opp_attack
+            
             if element not in player_data:
                 player_data[element] = {'name': row[1], 'X': [], 'y': []}
-            player_data[element]['X'].append([row[2], row[3], row[4], row[5], row[6]])
-            player_data[element]['y'].append(row[7])
+            
+            # Features: [attack_advantage, defense_advantage, was_home]
+            player_data[element]['X'].append([attack_advantage, defense_advantage, was_home])
+            player_data[element]['y'].append(total_points)
         
         # Convert to numpy arrays and train
         for element in player_data:
@@ -72,9 +85,10 @@ class TestPredictionsGenerator:
             
             result = predictor.train_model(player_data[element]['X'], player_data[element]['y'])
             if result is not None:
-                model, mae = result
+                model_dict, mae = result
                 predictor.models[element] = {
-                    'model': model,
+                    'model': model_dict['model'],
+                    'scaler': model_dict['scaler'],
                     'name': player_data[element]['name'],
                     'samples': len(player_data[element]['X']),
                     'mae': mae

@@ -9,7 +9,8 @@ import pickle
 from io import StringIO
 from pathlib import Path
 from datetime import datetime
-from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
 
 from .database import FPLDatabase
@@ -118,32 +119,77 @@ class TeamValuationCalculator:
             conn.commit()
     
     def run(self):
-        """Calculate and insert team valuations."""
+        """Calculate team attack/defense scores based on rolling average points."""
         print(f"\n{'='*60}")
         print("STEP 2: Calculating team valuations")
         print(f"{'='*60}")
         
         self.create_table()
         
+        # Get all gameweek data ordered by player and gameweek
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT OR REPLACE INTO team_fixture_valuations 
-                (season, gw, fixture, team, defense_value, attack_value)
-                SELECT 
-                    season, gw, fixture, team,
-                    COALESCE(SUM(CASE WHEN position IN ('GK', 'DEF') THEN value ELSE 0 END), 0) as defense_value,
-                    COALESCE(SUM(CASE WHEN position IN ('MID', 'FWD') THEN value ELSE 0 END), 0) as attack_value
+                SELECT season, gw, fixture, team, element, position, total_points, starts
                 FROM player_gameweek_history
-                WHERE starts = 1
-                GROUP BY season, gw, fixture, team
-                ORDER BY season, gw, fixture, team
+                ORDER BY season, element, gw
             """)
-            conn.commit()
-            rows = cursor.rowcount
+            all_data = cursor.fetchall()
         
-        print(f"  ✓ Calculated valuations for {rows} team-fixtures")
-        return {'valuations': rows}
+        # Calculate rolling average for each player
+        player_rolling_avg = {}  # {(season, element): [points history]}
+        team_scores = []
+        
+        for row in all_data:
+            season, gw, fixture, team, element, position, total_points, starts = row
+            
+            # Skip if didn't start
+            if starts != 1:
+                continue
+            
+            # Initialize player history if needed
+            key = (season, element)
+            if key not in player_rolling_avg:
+                player_rolling_avg[key] = []
+            
+            # Calculate rolling average (mean of all previous points including current)
+            player_rolling_avg[key].append(total_points)
+            avg_points = sum(player_rolling_avg[key]) / len(player_rolling_avg[key])
+            
+            # Store for aggregation
+            team_scores.append((season, gw, fixture, team, position, avg_points))
+        
+        # Aggregate by team/fixture for attack and defense
+        team_fixture_scores = {}
+        for season, gw, fixture, team, position, avg_points in team_scores:
+            key = (season, gw, fixture, team)
+            if key not in team_fixture_scores:
+                team_fixture_scores[key] = {'attack': [], 'defense': []}
+            
+            if position in ('MID', 'FWD'):
+                team_fixture_scores[key]['attack'].append(avg_points)
+            elif position in ('GK', 'DEF'):
+                team_fixture_scores[key]['defense'].append(avg_points)
+        
+        # Insert into database
+        valuations = []
+        for (season, gw, fixture, team), scores in team_fixture_scores.items():
+            attack_score = sum(scores['attack']) if scores['attack'] else 0.0
+            defense_score = sum(scores['defense']) if scores['defense'] else 0.0
+            valuations.append((season, gw, fixture, team, defense_score, attack_score))
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM team_fixture_valuations")
+            cursor.executemany("""
+                INSERT INTO team_fixture_valuations 
+                (season, gw, fixture, team, defense_value, attack_value)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, valuations)
+            conn.commit()
+        
+        print(f"  ✓ Calculated valuations for {len(valuations)} team-fixtures")
+        return {'valuations': len(valuations)}
 
 
 class PlayerMatchContextBuilder:
@@ -230,7 +276,7 @@ class PointsPredictor:
         self.models = {}
     
     def load_training_data(self):
-        """Load player match context data grouped by player."""
+        """Load player match context data grouped by player with differential features."""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -246,14 +292,27 @@ class PointsPredictor:
         if not data:
             raise ValueError("No training data found")
         
-        # Group by player
+        # Group by player with differential features
         player_data = {}
         for row in data:
             element = row[0]
+            team_attack = row[2]
+            team_defense = row[3]
+            opp_attack = row[4]
+            opp_defense = row[5]
+            was_home = row[6]
+            total_points = row[7]
+            
+            # Calculate differential features
+            attack_advantage = team_attack - opp_defense  # Our attack vs their defense
+            defense_advantage = team_defense - opp_attack  # Our defense vs their attack
+            
             if element not in player_data:
                 player_data[element] = {'name': row[1], 'X': [], 'y': []}
-            player_data[element]['X'].append([row[2], row[3], row[4], row[5], row[6]])
-            player_data[element]['y'].append(row[7])
+            
+            # Features: [attack_advantage, defense_advantage, was_home]
+            player_data[element]['X'].append([attack_advantage, defense_advantage, was_home])
+            player_data[element]['y'].append(total_points)
         
         # Convert to numpy arrays
         for element in player_data:
@@ -263,22 +322,23 @@ class PointsPredictor:
         return player_data
     
     def train_model(self, X, y, min_samples=5):
-        """Train GradientBoosting model for a player."""
+        """Train Linear Regression model with feature scaling for a player."""
         if len(X) < min_samples:
             return None
         
-        model = GradientBoostingRegressor(
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=3,
-            random_state=42
-        )
-        model.fit(X, y)
+        # Create and fit scaler
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
         
-        y_pred = model.predict(X)
+        # Train linear regression model
+        model = LinearRegression()
+        model.fit(X_scaled, y)
+        
+        # Calculate MAE on training data
+        y_pred = model.predict(X_scaled)
         mae = mean_absolute_error(y, y_pred)
         
-        return model, mae
+        return {'model': model, 'scaler': scaler}, mae
     
     def run(self):
         """Train models for all players."""
@@ -298,9 +358,10 @@ class PointsPredictor:
                 skipped += 1
                 continue
             
-            model, mae = result
+            model_dict, mae = result
             self.models[element] = {
-                'model': model,
+                'model': model_dict['model'],
+                'scaler': model_dict['scaler'],
                 'name': data['name'],
                 'samples': len(data['X']),
                 'mae': mae
@@ -317,12 +378,20 @@ class PointsPredictor:
         return {'trained': trained, 'skipped': skipped}
     
     def predict(self, player_id, team_attack, team_defense, opp_attack, opp_defense, is_home):
-        """Predict points for a player."""
+        """Predict points for a player using differential features and scaling."""
         if player_id not in self.models:
             return 0.0
         
-        features = np.array([[team_attack, team_defense, opp_attack, opp_defense, is_home]])
-        predicted = self.models[player_id]['model'].predict(features)[0]
+        # Calculate differential features (same as training)
+        attack_advantage = team_attack - opp_defense
+        defense_advantage = team_defense - opp_attack
+        
+        # Prepare features and scale them
+        features = np.array([[attack_advantage, defense_advantage, is_home]])
+        features_scaled = self.models[player_id]['scaler'].transform(features)
+        
+        # Make prediction
+        predicted = self.models[player_id]['model'].predict(features_scaled)[0]
         return np.clip(predicted, 0, 15)
 
 

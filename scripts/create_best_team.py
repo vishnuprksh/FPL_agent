@@ -45,46 +45,58 @@ class FPLSquadOptimizer:
             return 1
         
     def load_player_data(self) -> pd.DataFrame:
-        """Load player data from the SQLite database."""
+        """Load player data with predicted points for next gameweek from final_predictions table."""
+        # Get the next gameweek to predict for
+        next_gw = self.current_gameweek + 1
+        print(f"Loading predictions for Gameweek {next_gw}")
+        
         query = """
         SELECT 
-            id,
-            web_name as name,
-            element_type_name as position,
-            team,
-            now_cost / 10.0 as price,  -- Convert from tenths to millions
-            ep_this as predicted_points,
-            starts
-        FROM elements 
-        WHERE can_select = 1 
-        AND ep_this IS NOT NULL 
-        AND now_cost > 0
-        ORDER BY id
+            e.id,
+            e.web_name as name,
+            e.element_type_name as position,
+            e.team,
+            e.now_cost / 10.0 as price,
+            COALESCE(AVG(fp.predicted_points), 0.0) as predicted_points,
+            e.starts
+        FROM elements e
+        LEFT JOIN final_predictions fp 
+            ON e.id = fp.player_id 
+            AND fp.gameweek = ?
+        WHERE e.can_select = 1 
+        AND e.now_cost > 0
+        GROUP BY e.id, e.web_name, e.element_type_name, e.team, e.now_cost, e.starts
+        ORDER BY e.id
         """
         
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query(query, conn)
+            df = pd.read_sql_query(query, conn, params=(next_gw,))
         
         # Handle any missing predicted points
         df['predicted_points'] = df['predicted_points'].fillna(0.0)
         df['starts'] = df['starts'].fillna(0)
         
         print(f"Loaded {len(df)} players from database (before filtering)")
+        print(f"Players with predictions (>0 points): {(df['predicted_points'] > 0).sum()}")
         
         # Filter out non-frequent starters
-        # A player is considered a frequent starter if starts >= 50% of weeks finished
-        weeks_finished = self.current_gameweek
-        min_starts_required = weeks_finished * 0.75
-        
-        print(f"Weeks finished: {weeks_finished}, minimum starts required: {min_starts_required:.1f}")
-        
-        df_filtered = df[df['starts'] >= min_starts_required].copy()
+        # A player is considered a frequent starter if starts >= 75% of weeks finished
+        weeks_finished = self.current_gameweek - 1
+        if weeks_finished > 0:
+            min_starts_required = weeks_finished * 0.75
+            print(f"Weeks finished: {weeks_finished}, minimum starts required: {min_starts_required:.1f}")
+            
+            df_filtered = df[df['starts'] >= min_starts_required].copy()
+            players_removed = len(df) - len(df_filtered)
+            print(f"Filtered out {players_removed} non-frequent starters")
+        else:
+            # No filtering if season just started
+            df_filtered = df.copy()
+            print(f"Season just started - no starts filtering applied")
         
         # CRITICAL: Reset index after filtering to avoid optimization errors
         df_filtered = df_filtered.reset_index(drop=True)
         
-        players_removed = len(df) - len(df_filtered)
-        print(f"Filtered out {players_removed} non-frequent starters")
         print(f"Remaining players: {len(df_filtered)}")
         print(f"Position distribution: {df_filtered['position'].value_counts().to_dict()}")
         
@@ -235,7 +247,8 @@ class FPLSquadOptimizer:
         output.append("=" * 60)
         
         # Summary
-        output.append(f"\nOBJECTIVE VALUE: {results['objective_value']:.6f}")
+        output.append(f"\nPREDICTIONS FOR GAMEWEEK: {self.current_gameweek + 1}")
+        output.append(f"OBJECTIVE VALUE: {results['objective_value']:.6f}")
         output.append(f"EPSILON (bench penalty): {results['epsilon']}")
         output.append(f"TOTAL PREDICTED POINTS (Starting XI): {results['total_predicted_points']:.2f}")
         output.append(f"TOTAL SQUAD COST: £{results['total_cost']:.1f}m")
