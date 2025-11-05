@@ -277,12 +277,12 @@ class PointsPredictor:
     """
     
     def __init__(self, db: FPLDatabase, model_path: str = "models/player_points_predictors.pkl", 
-                 player_weight: float = 0.7):
+                 player_weight: float = 0.5):
         self.db = db
         self.model_path = Path(model_path)
         self.models = {}  # Player-specific models
         self.position_models = {}  # Position-level models (fallback)
-        self.player_weight = player_weight  # Weight for player model (0.7 means 70% player, 30% position)
+        self.player_weight = player_weight  # Weight for player model (0.5 means 50% player, 50% position)
         self._load_models()
     
     def _load_models(self):
@@ -508,7 +508,7 @@ class PointsPredictor:
         # Combine predictions based on availability
         if player_prediction is not None and position_prediction is not None:
             # Both available - weighted blend
-            # Example: Haaland's 15 points + FWD baseline 8 points = 70%*15 + 30%*8 = 12.9
+            # Example: Haaland's 15 points + FWD baseline 8 points = 50%*15 + 50%*8 = 11.5
             blended = (self.player_weight * player_prediction + 
                       (1 - self.player_weight) * position_prediction)
             return np.clip(blended, 0, 15)
