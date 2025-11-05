@@ -36,28 +36,33 @@ class TestPredictionsGenerator:
             return [row[0] for row in cursor]
     
     def train_predictor_up_to_gw(self, max_gw: int):
-        """Train a predictor using only data up to max_gw."""
+        """Train a predictor using only data up to max_gw with hierarchical models."""
         predictor = PointsPredictor(self.db, model_path=f"models/test_predictor_gw{max_gw}.pkl")
         
-        # Load training data filtered by gameweek
+        # Load training data filtered by gameweek with position info
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT element, name, team_attack_value, team_defense_value,
-                       opponent_attack_value, opponent_defense_value, was_home, total_points
-                FROM player_match_context
-                WHERE gw <= ?
-                  AND team_attack_value IS NOT NULL AND team_defense_value IS NOT NULL
-                  AND opponent_attack_value IS NOT NULL AND opponent_defense_value IS NOT NULL
-                  AND was_home IS NOT NULL AND total_points IS NOT NULL
+                SELECT pmc.element, pmc.name, pmc.team_attack_value, pmc.team_defense_value,
+                       pmc.opponent_attack_value, pmc.opponent_defense_value, pmc.was_home, 
+                       pmc.total_points, e.element_type_name
+                FROM player_match_context pmc
+                JOIN elements e ON pmc.element = e.id
+                WHERE pmc.gw <= ?
+                  AND pmc.team_attack_value IS NOT NULL AND pmc.team_defense_value IS NOT NULL
+                  AND pmc.opponent_attack_value IS NOT NULL AND pmc.opponent_defense_value IS NOT NULL
+                  AND pmc.was_home IS NOT NULL AND pmc.total_points IS NOT NULL
+                  AND e.element_type_name IS NOT NULL
             """, (max_gw,))
             data = cursor.fetchall()
         
         if not data:
             return None
         
-        # Group by player
+        # Group by player and position
         player_data = {}
+        position_data = {}
+        
         for row in data:
             element = row[0]
             team_attack = row[2]
@@ -66,19 +71,40 @@ class TestPredictionsGenerator:
             opp_defense = row[5]
             was_home = row[6]
             total_points = row[7]
+            position = row[8]
             
             # Calculate differential features
             attack_advantage = team_attack - opp_defense
             defense_advantage = team_defense - opp_attack
             
+            # Group by player
             if element not in player_data:
-                player_data[element] = {'name': row[1], 'X': [], 'y': []}
-            
-            # Features: [attack_advantage, defense_advantage, was_home]
+                player_data[element] = {'name': row[1], 'position': position, 'X': [], 'y': []}
             player_data[element]['X'].append([attack_advantage, defense_advantage, was_home])
             player_data[element]['y'].append(total_points)
+            
+            # Group by position
+            if position not in position_data:
+                position_data[position] = {'X': [], 'y': []}
+            position_data[position]['X'].append([attack_advantage, defense_advantage, was_home])
+            position_data[position]['y'].append(total_points)
         
-        # Convert to numpy arrays and train
+        # Train position models first
+        for position in position_data:
+            position_data[position]['X'] = np.array(position_data[position]['X'])
+            position_data[position]['y'] = np.array(position_data[position]['y'])
+            
+            result = predictor.train_position_model(position_data[position]['X'], position_data[position]['y'])
+            if result is not None:
+                model_dict, mae = result
+                predictor.position_models[position] = {
+                    'model': model_dict['model'],
+                    'scaler': model_dict['scaler'],
+                    'samples': len(position_data[position]['X']),
+                    'mae': mae
+                }
+        
+        # Then train player-specific models
         for element in player_data:
             player_data[element]['X'] = np.array(player_data[element]['X'])
             player_data[element]['y'] = np.array(player_data[element]['y'])
@@ -90,6 +116,7 @@ class TestPredictionsGenerator:
                     'model': model_dict['model'],
                     'scaler': model_dict['scaler'],
                     'name': player_data[element]['name'],
+                    'position': player_data[element]['position'],
                     'samples': len(player_data[element]['X']),
                     'mae': mae
                 }
@@ -157,11 +184,11 @@ class TestPredictionsGenerator:
             print(f"    Training on data up to GW {train_up_to}...")
             predictor = self.train_predictor_up_to_gw(train_up_to)
             
-            if predictor is None or not predictor.models:
+            if predictor is None or (not predictor.models and not predictor.position_models):
                 print(f"    ✗ No training data available")
                 continue
             
-            print(f"    ✓ Trained {len(predictor.models)} player models")
+            print(f"    ✓ Trained {len(predictor.position_models)} position models, {len(predictor.models)} player models")
             
             # Get team valuations up to training cutoff
             team_valuations = self.get_team_valuations_up_to_gw(train_up_to)

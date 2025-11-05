@@ -268,32 +268,58 @@ class PlayerMatchContextBuilder:
 
 
 class PointsPredictor:
-    """Train ML models to predict player points."""
+    """Train ML models to predict player points using two-level hierarchy.
+    
+    Level 1: Position-specific models (FWD, MID, DEF, GK) for all players
+    Level 2: Player-specific models that fine-tune individual predictions
+    """
     
     def __init__(self, db: FPLDatabase, model_path: str = "models/player_points_predictors.pkl"):
         self.db = db
         self.model_path = Path(model_path)
-        self.models = {}
+        self.models = {}  # Player-specific models
+        self.position_models = {}  # Position-level models (fallback)
+        self._load_models()
+    
+    def _load_models(self):
+        """Load existing models if they exist."""
+        if self.model_path.exists():
+            with open(self.model_path, 'rb') as f:
+                saved_data = pickle.load(f)
+                
+                # Handle new format (dict with 'players' and 'positions')
+                if isinstance(saved_data, dict) and 'players' in saved_data:
+                    self.models = saved_data.get('players', {})
+                    self.position_models = saved_data.get('positions', {})
+                else:
+                    # Old format - just player models
+                    self.models = saved_data
+                    self.position_models = {}
     
     def load_training_data(self):
-        """Load player match context data grouped by player with differential features."""
+        """Load player match context data grouped by player and position with differential features."""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT element, name, team_attack_value, team_defense_value,
-                       opponent_attack_value, opponent_defense_value, was_home, total_points
-                FROM player_match_context
-                WHERE team_attack_value IS NOT NULL AND team_defense_value IS NOT NULL
-                  AND opponent_attack_value IS NOT NULL AND opponent_defense_value IS NOT NULL
-                  AND was_home IS NOT NULL AND total_points IS NOT NULL
+                SELECT pmc.element, pmc.name, pmc.team_attack_value, pmc.team_defense_value,
+                       pmc.opponent_attack_value, pmc.opponent_defense_value, pmc.was_home, 
+                       pmc.total_points, e.element_type_name
+                FROM player_match_context pmc
+                JOIN elements e ON pmc.element = e.id
+                WHERE pmc.team_attack_value IS NOT NULL AND pmc.team_defense_value IS NOT NULL
+                  AND pmc.opponent_attack_value IS NOT NULL AND pmc.opponent_defense_value IS NOT NULL
+                  AND pmc.was_home IS NOT NULL AND pmc.total_points IS NOT NULL
+                  AND e.element_type_name IS NOT NULL
             """)
             data = cursor.fetchall()
         
         if not data:
             raise ValueError("No training data found")
         
-        # Group by player with differential features
+        # Group by player and position with differential features
         player_data = {}
+        position_data = {}
+        
         for row in data:
             element = row[0]
             team_attack = row[2]
@@ -302,24 +328,36 @@ class PointsPredictor:
             opp_defense = row[5]
             was_home = row[6]
             total_points = row[7]
+            position = row[8]  # element_type_name (FWD, MID, DEF, GK)
             
             # Calculate differential features
             attack_advantage = team_attack - opp_defense  # Our attack vs their defense
             defense_advantage = team_defense - opp_attack  # Our defense vs their attack
             
+            # Group by player
             if element not in player_data:
-                player_data[element] = {'name': row[1], 'X': [], 'y': []}
+                player_data[element] = {'name': row[1], 'position': position, 'X': [], 'y': []}
             
             # Features: [attack_advantage, defense_advantage, was_home]
             player_data[element]['X'].append([attack_advantage, defense_advantage, was_home])
             player_data[element]['y'].append(total_points)
+            
+            # Group by position for position-level models
+            if position not in position_data:
+                position_data[position] = {'X': [], 'y': []}
+            position_data[position]['X'].append([attack_advantage, defense_advantage, was_home])
+            position_data[position]['y'].append(total_points)
         
         # Convert to numpy arrays
         for element in player_data:
             player_data[element]['X'] = np.array(player_data[element]['X'])
             player_data[element]['y'] = np.array(player_data[element]['y'])
         
-        return player_data
+        for position in position_data:
+            position_data[position]['X'] = np.array(position_data[position]['X'])
+            position_data[position]['y'] = np.array(position_data[position]['y'])
+        
+        return player_data, position_data
     
     def train_model(self, X, y, min_samples=5):
         """Train Linear Regression model with feature scaling for a player."""
@@ -340,22 +378,64 @@ class PointsPredictor:
         
         return {'model': model, 'scaler': scaler}, mae
     
+    def train_position_model(self, X, y, min_samples=20):
+        """Train position-level model with more samples required."""
+        if len(X) < min_samples:
+            return None
+        
+        # Create and fit scaler
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Train linear regression model
+        model = LinearRegression()
+        model.fit(X_scaled, y)
+        
+        # Calculate MAE on training data
+        y_pred = model.predict(X_scaled)
+        mae = mean_absolute_error(y, y_pred)
+        
+        return {'model': model, 'scaler': scaler}, mae
+    
     def run(self):
-        """Train models for all players."""
+        """Train models for all players using hierarchical approach."""
         print(f"\n{'='*60}")
-        print("STEP 4: Training points prediction models")
+        print("STEP 4: Training hierarchical prediction models")
         print(f"{'='*60}")
         
-        player_data = self.load_training_data()
-        print(f"  ✓ Loaded data for {len(player_data)} players")
+        player_data, position_data = self.load_training_data()
+        print(f"  ✓ Loaded data for {len(player_data)} players across {len(position_data)} positions")
         
-        trained = 0
-        skipped = 0
+        # First, train position-level models (Level 1)
+        print(f"\n  Training Level 1: Position-specific models...")
+        position_trained = 0
+        for position, data in position_data.items():
+            result = self.train_position_model(data['X'], data['y'])
+            if result is None:
+                print(f"    ⚠ Skipped {position} (insufficient samples: {len(data['X'])})")
+                continue
+            
+            model_dict, mae = result
+            self.position_models[position] = {
+                'model': model_dict['model'],
+                'scaler': model_dict['scaler'],
+                'samples': len(data['X']),
+                'mae': mae
+            }
+            print(f"    ✓ {position}: {len(data['X'])} samples, MAE={mae:.2f}")
+            position_trained += 1
+        
+        print(f"  ✓ Trained {position_trained} position models")
+        
+        # Then, train player-specific models (Level 2)
+        print(f"\n  Training Level 2: Player-specific models...")
+        player_trained = 0
+        player_skipped = 0
         
         for element, data in player_data.items():
             result = self.train_model(data['X'], data['y'])
             if result is None:
-                skipped += 1
+                player_skipped += 1
                 continue
             
             model_dict, mae = result
@@ -363,36 +443,54 @@ class PointsPredictor:
                 'model': model_dict['model'],
                 'scaler': model_dict['scaler'],
                 'name': data['name'],
+                'position': data['position'],
                 'samples': len(data['X']),
                 'mae': mae
             }
-            trained += 1
+            player_trained += 1
         
-        # Save models
+        # Save both models
         self.model_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.model_path, 'wb') as f:
-            pickle.dump(self.models, f)
+            pickle.dump({'players': self.models, 'positions': self.position_models}, f)
         
-        print(f"  ✓ Trained {trained} models (skipped {skipped})")
+        print(f"  ✓ Trained {player_trained} player models (skipped {player_skipped})")
         print(f"  ✓ Saved to {self.model_path}")
-        return {'trained': trained, 'skipped': skipped}
+        return {
+            'position_models': position_trained,
+            'player_models': player_trained,
+            'player_skipped': player_skipped
+        }
     
     def predict(self, player_id, team_attack, team_defense, opp_attack, opp_defense, is_home):
-        """Predict points for a player using differential features and scaling."""
-        if player_id not in self.models:
-            return 0.0
-        
+        """Predict points using two-level hierarchy: player model → position model → 0."""
         # Calculate differential features (same as training)
         attack_advantage = team_attack - opp_defense
         defense_advantage = team_defense - opp_attack
-        
-        # Prepare features and scale them
         features = np.array([[attack_advantage, defense_advantage, is_home]])
-        features_scaled = self.models[player_id]['scaler'].transform(features)
         
-        # Make prediction
-        predicted = self.models[player_id]['model'].predict(features_scaled)[0]
-        return np.clip(predicted, 0, 15)
+        # Level 2: Try player-specific model first
+        if player_id in self.models:
+            features_scaled = self.models[player_id]['scaler'].transform(features)
+            predicted = self.models[player_id]['model'].predict(features_scaled)[0]
+            return np.clip(predicted, 0, 15)
+        
+        # Level 1: Fallback to position-level model
+        # Get player's position from database
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT element_type_name FROM elements WHERE id = ?", 
+                (player_id,)
+            )
+            row = cursor.fetchone()
+            if row and row[0] in self.position_models:
+                position = row[0]
+                features_scaled = self.position_models[position]['scaler'].transform(features)
+                predicted = self.position_models[position]['model'].predict(features_scaled)[0]
+                return np.clip(predicted, 0, 15)
+        
+        # No model available
+        return 0.0
 
 
 class FinalPredictionsGenerator:
