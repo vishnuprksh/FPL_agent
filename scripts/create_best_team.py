@@ -6,26 +6,33 @@ Creates an optimal 15-player FPL squad that maximizes predicted points for the
 starting 11 while keeping bench players as cheap as possible.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import sqlite3
 import pandas as pd
 import requests
 from ortools.linear_solver import pywraplp
 from typing import Dict, List, Tuple, Optional
+from fpl_agent import FPLDatabase
 
 
 class FPLSquadOptimizer:
     """Integer Linear Program solver for FPL squad optimization."""
     
-    def __init__(self, db_path: str, epsilon: float = 0.001):
+    def __init__(self, db_path: str, epsilon: float = 0.001, num_weeks: int = 3):
         """
         Initialize the optimizer.
         
         Args:
             db_path: Path to the SQLite database
             epsilon: Weight for bench cost penalty (should be small)
+            num_weeks: Number of upcoming weeks to consider for predictions (default: 3)
         """
         self.db_path = db_path
         self.epsilon = epsilon
+        self.num_weeks = num_weeks
         self.solver = None
         self.players_df = None
         self.current_gameweek = self._get_current_gameweek()
@@ -45,39 +52,22 @@ class FPLSquadOptimizer:
             return 1
         
     def load_player_data(self) -> pd.DataFrame:
-        """Load player data with predicted points for next gameweek from final_predictions table."""
-        # Get the next gameweek to predict for
-        next_gw = self.current_gameweek + 1
-        print(f"Loading predictions for Gameweek {next_gw}")
+        """Load player data from player_summary table."""
+        db = FPLDatabase(self.db_path)
+        df = db.load_player_data(num_weeks=self.num_weeks)
         
-        query = """
-        SELECT 
-            e.id,
-            e.web_name as name,
-            e.element_type_name as position,
-            e.team,
-            e.now_cost / 10.0 as price,
-            COALESCE(AVG(fp.predicted_points), 0.0) as predicted_points,
-            e.starts
-        FROM elements e
-        LEFT JOIN final_predictions fp 
-            ON e.id = fp.player_id 
-            AND fp.gameweek = ?
-        WHERE e.can_select = 1 
-        AND e.now_cost > 0
-        GROUP BY e.id, e.web_name, e.element_type_name, e.team, e.now_cost, e.starts
-        ORDER BY e.id
-        """
+        print(f"Loaded {len(df)} players from player_summary table")
+        print(f"Players with predictions (>0 points): {(df['predicted_points'] > 0).sum()}")
+        
+        # Load starts data from elements table for filtering
+        query = "SELECT id, starts FROM elements WHERE can_select = 1"
         
         with sqlite3.connect(self.db_path) as conn:
-            df = pd.read_sql_query(query, conn, params=(next_gw,))
+            starts_df = pd.read_sql_query(query, conn)
         
-        # Handle any missing predicted points
-        df['predicted_points'] = df['predicted_points'].fillna(0.0)
+        # Merge starts data
+        df = df.merge(starts_df, left_on='id', right_on='id', how='left')
         df['starts'] = df['starts'].fillna(0)
-        
-        print(f"Loaded {len(df)} players from database (before filtering)")
-        print(f"Players with predictions (>0 points): {(df['predicted_points'] > 0).sum()}")
         
         # Filter out non-frequent starters
         # A player is considered a frequent starter if starts >= 75% of weeks finished
@@ -247,7 +237,9 @@ class FPLSquadOptimizer:
         output.append("=" * 60)
         
         # Summary
-        output.append(f"\nPREDICTIONS FOR GAMEWEEK: {self.current_gameweek + 1}")
+        next_gw = self.current_gameweek + 1
+        end_gw = next_gw + self.num_weeks - 1
+        output.append(f"\nPREDICTIONS FOR GAMEWEEKS: {next_gw}-{end_gw} (next {self.num_weeks} weeks)")
         output.append(f"OBJECTIVE VALUE: {results['objective_value']:.6f}")
         output.append(f"EPSILON (bench penalty): {results['epsilon']}")
         output.append(f"TOTAL PREDICTED POINTS (Starting XI): {results['total_predicted_points']:.2f}")
@@ -295,10 +287,27 @@ class FPLSquadOptimizer:
 
 def main():
     """Main function to run the FPL squad optimization."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='FPL Squad Optimizer')
+    parser.add_argument(
+        '--weeks',
+        type=int,
+        default=3,
+        help='Number of weeks to consider for predictions (default: 3)'
+    )
+    parser.add_argument(
+        '--epsilon',
+        type=float,
+        default=0.001,
+        help='Weight for bench cost penalty (default: 0.001)'
+    )
+    args = parser.parse_args()
+    
     db_path = "/workspaces/FPL_agent/data/fpl_agent.db"
     
     # Create optimizer
-    optimizer = FPLSquadOptimizer(db_path, epsilon=0.001)
+    optimizer = FPLSquadOptimizer(db_path, epsilon=args.epsilon, num_weeks=args.weeks)
     
     try:
         # Solve the optimization problem

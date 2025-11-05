@@ -15,18 +15,27 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 from fpl_agent import FPLTransferOptimizer, FPLDatabase
 import argparse
+import sys
+import os
+
+# Import the squad optimizer
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
+from create_best_team import FPLSquadOptimizer
 
 # Constants
 DB_PATH = "/workspaces/FPL_agent/data/fpl_agent.db"
 POSITION_LIMITS = {'GK': 2, 'DEF': 5, 'MID': 5, 'FWD': 3}
 BUDGET = 100.0
 
+# Global variable for num_weeks (will be set from command line args)
+NUM_WEEKS = 3
+
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
 # Load available players
 db = FPLDatabase(DB_PATH)
-all_players = db.load_player_data()
+all_players = db.load_player_data(num_weeks=NUM_WEEKS)
 
 # Load team names mapping
 with db.get_connection() as conn:
@@ -48,7 +57,8 @@ def load_team_from_db():
             """)
             
             if not cursor.fetchone():
-                return {"team": []}
+                print("No current_team table found. Creating optimized team...")
+                return create_optimal_team()
             
             # Load team data
             team_df = pd.read_sql_query("""
@@ -65,7 +75,8 @@ def load_team_from_db():
             """, conn)
             
             if team_df.empty:
-                return {"team": []}
+                print("current_team table is empty. Creating optimized team...")
+                return create_optimal_team()
             
             # Convert to team structure
             team_structure = {"team": []}
@@ -91,8 +102,112 @@ def load_team_from_db():
         print(f"Error loading team from database: {e}")
         return {"team": []}
 
+def create_optimal_team():
+    """Create an optimal team using the FPL Squad Optimizer."""
+    try:
+        # Refresh all_players data to ensure we have latest predictions
+        global all_players
+        all_players = db.load_player_data(num_weeks=NUM_WEEKS)
+        print(f"Refreshed player data: {len(all_players)} players loaded")
+        
+        print(f"Running squad optimizer with {NUM_WEEKS} weeks of predictions...")
+        optimizer = FPLSquadOptimizer(DB_PATH, epsilon=0.001, num_weeks=NUM_WEEKS)
+        results = optimizer.solve()
+        
+        # Convert optimizer results to team structure
+        squad_df = results['squad']
+        starting_df = results['starting_xi']
+        
+        # Save to database
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        with db.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Drop existing current_team table completely to ensure clean slate
+            cursor.execute("DROP TABLE IF EXISTS current_team")
+            
+            # Create current_team table fresh
+            cursor.execute("""
+                CREATE TABLE current_team (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    player_id INTEGER,
+                    player_name TEXT,
+                    position TEXT,
+                    team_id INTEGER,
+                    team_name TEXT,
+                    price REAL,
+                    predicted_points REAL,
+                    is_starter BOOLEAN,
+                    saved_at TIMESTAMP,
+                    team_cost REAL,
+                    team_points REAL
+                )
+            """)
+            
+            # Get team names
+            teams_df = pd.read_sql_query("SELECT DISTINCT team, team_name FROM elements ORDER BY team", conn)
+            team_id_to_name_local = dict(zip(teams_df['team'], teams_df['team_name']))
+            
+            total_cost = squad_df['price'].sum()
+            total_points = starting_df['predicted_points'].sum()
+            
+            # Insert new team data
+            for _, row in squad_df.iterrows():
+                is_starter = row['id'] in starting_df['id'].values
+                cursor.execute("""
+                    INSERT INTO current_team (
+                        player_id, player_name, position, team_id, team_name,
+                        price, predicted_points, is_starter, saved_at,
+                        team_cost, team_points
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    int(row['id']), row['name'], row['position'], int(row['team']),
+                    team_id_to_name_local.get(row['team'], f"Team {row['team']}"),
+                    row['price'], row['predicted_points'],
+                    is_starter, timestamp, total_cost, total_points
+                ))
+            
+            conn.commit()
+        
+        print(f"✅ Optimized team created and saved! Cost: £{total_cost:.1f}m, Points: {total_points:.2f}")
+        
+        # Return team structure
+        team_structure = {"team": []}
+        for position in ['GK', 'DEF', 'MID', 'FWD']:
+            pos_players = squad_df[squad_df['position'] == position]
+            if not pos_players.empty:
+                team_structure["team"].append({
+                    "position": position,
+                    "players": [
+                        {
+                            "id": int(row['id']),
+                            "name": row['name'],
+                            "team": int(row['team']),
+                            "is_starter": bool(row['id'] in starting_df['id'].values)
+                        }
+                        for _, row in pos_players.iterrows()
+                    ]
+                })
+        
+        return team_structure
+        
+    except Exception as e:
+        print(f"Error creating optimal team: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"team": []}
+
 def team_json_to_dataframe(team_json):
-    """Convert team JSON to DataFrame with enriched data."""
+    """Convert team JSON to DataFrame with enriched data.
+    
+    Note: predicted_points comes from all_players DataFrame, which contains
+    the SUM of predictions for the next NUM_WEEKS gameweeks.
+    """
+    if not team_json or not team_json.get('team'):
+        return pd.DataFrame(columns=['id', 'name', 'position', 'team', 'team_name', 'price', 'predicted_points', 'is_starter'])
+    
     players_list = []
     for pos_data in team_json['team']:
         position = pos_data['position']
@@ -107,9 +222,15 @@ def team_json_to_dataframe(team_json):
                     'team': player_row['team'],
                     'team_name': team_id_to_name.get(player_row['team'], f"Team {player_row['team']}"),
                     'price': player_row['price'],
-                    'predicted_points': player_row['predicted_points'],
+                    'predicted_points': player_row['predicted_points'],  # Sum of next NUM_WEEKS
                     'is_starter': player.get('is_starter', True)
                 })
+            else:
+                print(f"Warning: Player ID {player['id']} not found in all_players DataFrame")
+    
+    if not players_list:
+        return pd.DataFrame(columns=['id', 'name', 'position', 'team', 'team_name', 'price', 'predicted_points', 'is_starter'])
+    
     return pd.DataFrame(players_list)
 
 # App layout
@@ -130,6 +251,7 @@ app.layout = dbc.Container([
     dbc.Row([
         dbc.Col([
             html.H3("Current Team", className="mb-3"),
+            dbc.Button("🔄 Create Optimal Team", id='create-optimal-button', color="secondary", className="mb-3"),
             html.Div(id='team-summary', className="mb-3"),
             html.Div(id='team-display')
         ], width=12)
@@ -222,6 +344,19 @@ def reload_team_on_startup(n):
     return load_team_from_db()
 
 @callback(
+    Output('team-store', 'data', allow_duplicate=True),
+    Input('create-optimal-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def create_new_optimal_team(n_clicks):
+    """Create a new optimal team when button is clicked."""
+    if not n_clicks:
+        return dash.no_update
+    
+    print("User requested new optimal team...")
+    return create_optimal_team()
+
+@callback(
     Output('team-summary', 'children'),
     Output('team-display', 'children'),
     Output('player-to-replace-dropdown', 'options'),
@@ -235,13 +370,18 @@ def update_team_display(team_data):
         return "", "", [], [], []
     
     team_df = team_json_to_dataframe(team_data)
+    
+    # Handle empty team
+    if team_df.empty:
+        return dbc.Alert("No team loaded. Please create a team first.", color="warning"), "", [], [], []
+    
     total_cost = team_df['price'].sum()
     starting_points = team_df[team_df['is_starter']]['predicted_points'].sum()
     
     # Summary
     summary = dbc.Alert([
         html.H5(f"Total Cost: £{total_cost:.1f}m / £{BUDGET:.1f}m", className="mb-1"),
-        html.H5(f"Starting XI Points: {starting_points:.2f}", className="mb-0")
+        html.H5(f"Starting XI Points (next {NUM_WEEKS} weeks): {starting_points:.2f}", className="mb-0")
     ], color="info")
     
     # Create tables by position
@@ -257,7 +397,7 @@ def update_team_display(team_data):
                     {'name': 'Name', 'id': 'name'},
                     {'name': 'Team', 'id': 'team_name'},
                     {'name': 'Price (£m)', 'id': 'price', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Predicted Points', 'id': 'predicted_points', 'type': 'numeric', 'format': {'specifier': '.2f'}},
+                    {'name': f'Predicted Points ({NUM_WEEKS}w)', 'id': 'predicted_points', 'type': 'numeric', 'format': {'specifier': '.2f'}},
                     {'name': 'Starter', 'id': 'is_starter', 'type': 'text'}
                 ],
                 style_data_conditional=[
@@ -331,7 +471,7 @@ def update_replacement_options(selected_player_id, team_data):
     
     replacement_options = [
         {
-            'label': f"{row['name']} ({row['position']}) - {team_id_to_name.get(row['team'], 'Unknown')} - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts",
+            'label': f"{row['name']} ({row['position']}) - {team_id_to_name.get(row['team'], 'Unknown')} - £{row['price']:.1f}m, {row['predicted_points']:.2f}pts ({NUM_WEEKS}w)",
             'value': row['id']
         }
         for _, row in available.iterrows()
@@ -583,7 +723,7 @@ def optimize_transfers(n_clicks, team_data):
     
     try:
         optimizer = FPLTransferOptimizer(DB_PATH)
-        result = optimizer.find_best_transfer(team_data)
+        result = optimizer.find_best_transfer(team_data, num_weeks=NUM_WEEKS)
         
         if result['no_transfer_recommended']:
             return dbc.Alert([
@@ -606,7 +746,7 @@ def optimize_transfers(n_clicks, team_data):
                                 html.Br(),
                                 f"({transfer['out']['position']}) - {team_id_to_name.get(transfer['out']['team'], 'Unknown')}",
                                 html.Br(),
-                                f"£{transfer['out']['price']:.1f}m, {transfer['out']['predicted_points']:.2f} pts"
+                                f"£{transfer['out']['price']:.1f}m, {transfer['out']['predicted_points']:.2f} pts ({NUM_WEEKS}w)"
                             ], className="mb-0 small")
                         ], width=6),
                         dbc.Col([
@@ -616,7 +756,7 @@ def optimize_transfers(n_clicks, team_data):
                                 html.Br(),
                                 f"({transfer['in']['position']}) - {team_id_to_name.get(transfer['in']['team'], 'Unknown')}",
                                 html.Br(),
-                                f"£{transfer['in']['price']:.1f}m, {transfer['in']['predicted_points']:.2f} pts"
+                                f"£{transfer['in']['price']:.1f}m, {transfer['in']['predicted_points']:.2f} pts ({NUM_WEEKS}w)"
                             ], className="mb-0 small")
                         ], width=6)
                     ]),
@@ -631,7 +771,7 @@ def optimize_transfers(n_clicks, team_data):
                         dbc.Col([
                             html.P([
                                 html.Strong("📈 Gain: "),
-                                f"{transfer['points_gain']:+.2f} pts"
+                                f"{transfer['points_gain']:+.2f} pts ({NUM_WEEKS}w)"
                             ], className="mb-0 small")
                         ], width=6)
                     ])
@@ -661,10 +801,9 @@ def update_combined_export(team_data):
     # Include all players (starting XI and bench)
     team_json = json.dumps(team_data, indent=2)
     
-    prompt = """Analyse the current team for FPL,
-Based on the upcoming week fixture, fitness, player form, opponent strength, position and strategies recalculate the predicted points of the team.
-
-Based on the recalculated data, suggest top 5 changes I can do to make the team better
+    prompt = """Analyse the following team for FPL for the game week ahead,
+Based on the upcoming week fixture, fitness, rotation risk, player form, opponent strength, position and strategies recalculate the predicted points of the team.
+Based on the recalculated data, suggest whether to HOLD, or SELL each player in the team. If have to SELL, suggest the best replacement player considering budge and team constraints.
 
 ---
 
@@ -676,6 +815,22 @@ TEAM DATA (JSON):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run FPL Transfer Optimizer UI')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument(
+        '--weeks',
+        type=int,
+        default=3,
+        help='Number of weeks to consider for predictions (default: 3)'
+    )
     args = parser.parse_args()
+    
+    # Update NUM_WEEKS from command line argument
+    NUM_WEEKS = args.weeks
+    
+    # Reload players with the specified number of weeks
+    all_players = db.load_player_data(num_weeks=NUM_WEEKS)
+    
+    print(f"Starting FPL Transfer Optimizer UI with {NUM_WEEKS} weeks of predictions...")
+    print(f"Loaded {len(all_players)} players with predictions")
+    print(f"Sample predicted points: {all_players['predicted_points'].describe()}")
     
     app.run(debug=args.debug, host='0.0.0.0', port=8050)

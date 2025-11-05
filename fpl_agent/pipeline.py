@@ -12,8 +12,66 @@ from datetime import datetime
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
+from scipy.optimize import minimize
 
 from .database import FPLDatabase
+
+
+class VariancePenalizedRegression:
+    """Linear regression with variance-based regularization.
+    
+    Minimizes: L = Σ(y - ŷ)² + λ·Var_local(x)·ŷ²
+    
+    This penalizes high predictions in high-variance regions, making the model
+    more conservative when predicting for players with inconsistent performance.
+    """
+    
+    def __init__(self, lambda_penalty=0.1):
+        self.lambda_penalty = lambda_penalty
+        self.coef_ = None
+        self.intercept_ = None
+    
+    def fit(self, X, y, local_variance):
+        """Fit model with variance penalty.
+        
+        Args:
+            X: Feature matrix (n_samples, n_features)
+            y: Target values (n_samples,)
+            local_variance: Variance for each sample (n_samples,) - higher = more penalty
+        """
+        n_samples, n_features = X.shape
+        
+        # Initial parameters (intercept + coefficients)
+        initial_params = np.zeros(n_features + 1)
+        
+        def loss_function(params):
+            """Custom loss with variance penalty."""
+            intercept = params[0]
+            coef = params[1:]
+            
+            # Predictions
+            y_pred = X @ coef + intercept
+            
+            # Standard MSE loss
+            mse_loss = np.mean((y - y_pred) ** 2)
+            
+            # Variance penalty: λ·Var_local·ŷ²
+            variance_penalty = self.lambda_penalty * np.mean(local_variance * (y_pred ** 2))
+            
+            return mse_loss + variance_penalty
+        
+        # Minimize the loss
+        result = minimize(loss_function, initial_params, method='L-BFGS-B')
+        
+        # Store parameters
+        self.intercept_ = result.x[0]
+        self.coef_ = result.x[1:]
+        
+        return self
+    
+    def predict(self, X):
+        """Predict using fitted model."""
+        return X @ self.coef_ + self.intercept_
 
 
 class HistoricDataLoader:
@@ -352,10 +410,12 @@ class PointsPredictor:
             position_data[position]['X'].append([attack_advantage, defense_advantage, was_home])
             position_data[position]['y'].append(total_points)
         
-        # Convert to numpy arrays
+        # Convert to numpy arrays and calculate variance
         for element in player_data:
             player_data[element]['X'] = np.array(player_data[element]['X'])
             player_data[element]['y'] = np.array(player_data[element]['y'])
+            # Calculate standard deviation (variance measure) of player's points
+            player_data[element]['std'] = np.std(player_data[element]['y'])
         
         for position in position_data:
             position_data[position]['X'] = np.array(position_data[position]['X'])
@@ -363,8 +423,15 @@ class PointsPredictor:
         
         return player_data, position_data
     
-    def train_model(self, X, y, min_samples=5):
-        """Train Linear Regression model with feature scaling for a player."""
+    def train_model(self, X, y, min_samples=5, use_variance_penalty=True):
+        """Train regression model with optional variance penalty for a player.
+        
+        Args:
+            X: Feature matrix
+            y: Target values (points)
+            min_samples: Minimum samples required
+            use_variance_penalty: If True, use variance-penalized regression
+        """
         if len(X) < min_samples:
             return None
         
@@ -372,9 +439,31 @@ class PointsPredictor:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Train linear regression model
-        model = LinearRegression()
-        model.fit(X_scaled, y)
+        if use_variance_penalty:
+            # Calculate local variance for each sample
+            # Use rolling window approach: for each point, calculate variance of nearby points
+            local_variance = np.zeros(len(y))
+            window_size = min(5, len(y) // 2)  # Use 5 samples or half the data, whichever is smaller
+            
+            for i in range(len(y)):
+                # Get indices of nearby samples (sorted by distance in feature space)
+                distances = np.sum((X_scaled - X_scaled[i]) ** 2, axis=1)
+                nearest_indices = np.argsort(distances)[:window_size]
+                
+                # Calculate variance of target values for nearby samples
+                local_variance[i] = np.var(y[nearest_indices])
+            
+            # Normalize local variance to [0, 1] range for stability
+            if np.max(local_variance) > 0:
+                local_variance = local_variance / np.max(local_variance)
+            
+            # Train variance-penalized model
+            model = VariancePenalizedRegression(lambda_penalty=0.1)
+            model.fit(X_scaled, y, local_variance)
+        else:
+            # Standard linear regression
+            model = LinearRegression()
+            model.fit(X_scaled, y)
         
         # Calculate MAE on training data
         y_pred = model.predict(X_scaled)
@@ -382,8 +471,12 @@ class PointsPredictor:
         
         return {'model': model, 'scaler': scaler}, mae
     
-    def train_position_model(self, X, y, min_samples=20):
-        """Train position-level model with more samples required."""
+    def train_position_model(self, X, y, min_samples=20, use_variance_penalty=False):
+        """Train position-level model (no variance penalty at this level).
+        
+        Position models provide baseline predictions across all players in a position,
+        so we don't apply variance penalty here - only at the player level.
+        """
         if len(X) < min_samples:
             return None
         
@@ -391,7 +484,7 @@ class PointsPredictor:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Train linear regression model
+        # Train standard linear regression (no penalty at position level)
         model = LinearRegression()
         model.fit(X_scaled, y)
         
@@ -449,7 +542,8 @@ class PointsPredictor:
                 'name': data['name'],
                 'position': data['position'],
                 'samples': len(data['X']),
-                'mae': mae
+                'mae': mae,
+                'std': data['std']  # Store standard deviation for variance penalty
             }
             player_trained += 1
         
@@ -470,10 +564,13 @@ class PointsPredictor:
         """Predict points using weighted blend of position and player models.
         
         Strategy:
-        - If both models available: blend them (e.g., 70% player + 30% position)
-        - If only player model: use it (rare case - new position without baseline)
+        - If both models available: blend them (e.g., 50% player + 50% position)
+        - If only player model: use it (includes variance penalty from training)
         - If only position model: use it (new player without history)
         - If neither: return 0
+        
+        Note: Variance penalty is now baked into the player model during training,
+        not applied post-prediction.
         """
         # Calculate differential features (same as training)
         attack_advantage = team_attack - opp_defense
@@ -495,12 +592,12 @@ class PointsPredictor:
         player_prediction = None
         position_prediction = None
         
-        # Level 2: Player-specific model
+        # Level 2: Player-specific model (variance penalty already applied during training)
         if player_id in self.models:
             features_scaled = self.models[player_id]['scaler'].transform(features)
             player_prediction = self.models[player_id]['model'].predict(features_scaled)[0]
         
-        # Level 1: Position-level model
+        # Level 1: Position-level model (no variance penalty)
         if position and position in self.position_models:
             features_scaled = self.position_models[position]['scaler'].transform(features)
             position_prediction = self.position_models[position]['model'].predict(features_scaled)[0]
@@ -508,7 +605,6 @@ class PointsPredictor:
         # Combine predictions based on availability
         if player_prediction is not None and position_prediction is not None:
             # Both available - weighted blend
-            # Example: Haaland's 15 points + FWD baseline 8 points = 50%*15 + 50%*8 = 11.5
             blended = (self.player_weight * player_prediction + 
                       (1 - self.player_weight) * position_prediction)
             return np.clip(blended, 0, 15)
@@ -728,6 +824,15 @@ class FPLDataPipeline:
         # Step 5: Generate final predictions
         predictions_gen = FinalPredictionsGenerator(self.db, predictor)
         self.results['predictions'] = predictions_gen.run()
+        
+        # Step 6: Populate player_summary table
+        print(f"\n{'='*60}")
+        print("STEP 6: Populating player_summary table")
+        print(f"{'='*60}")
+        self.db.create_player_summary_table()
+        count = self.db.populate_player_summary(num_weeks=3)
+        self.results['player_summary'] = {'players': count, 'num_weeks': 3}
+        print(f"✓ Populated player_summary with {count} players (3 weeks)")
         
         # Summary
         end_time = datetime.now()

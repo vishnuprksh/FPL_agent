@@ -59,6 +59,17 @@ def get_dummy_team() -> Dict:
 
 def main():
     """Main function to run the FPL transfer optimization."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='FPL Transfer Optimizer')
+    parser.add_argument(
+        '--weeks',
+        type=int,
+        default=3,
+        help='Number of weeks to consider for predictions (default: 3)'
+    )
+    args = parser.parse_args()
+    
     db_path = "/workspaces/FPL_agent/data/fpl_agent.db"
     
     # Get dummy team (in future, this will be user input)
@@ -69,8 +80,8 @@ def main():
     
     try:
         # Find best transfer
-        print("Analyzing current team and finding best transfer...")
-        result = optimizer.find_best_transfer(current_team)
+        print(f"Analyzing current team and finding best transfer (next {args.weeks} weeks)...")
+        result = optimizer.find_best_transfer(current_team, num_weeks=args.weeks)
         
         # Display recommendation
         formatter = FPLFormatter()

@@ -1,5 +1,14 @@
 """
 Database utilities for FPL data storage and retrieval.
+
+Tables:
+- elements: Player master data from FPL API
+- teams: Team master data from FPL API
+- fixtures: Fixture data from FPL API
+- final_predictions: Weekly prediction data for all players by gameweek
+- player_summary: Aggregated player data with summed predictions for next N weeks (main query table)
+- current_team: User's saved team configuration
+- player_gameweek_history: Historical gameweek performance data
 """
 
 import sqlite3
@@ -19,28 +28,64 @@ class FPLDatabase:
         """Get database connection."""
         return sqlite3.connect(self.db_path)
     
-    def load_player_data(self) -> pd.DataFrame:
-        """Load player data from the SQLite database."""
-        query = """
-        SELECT 
-            id,
-            web_name as name,
-            element_type_name as position,
-            team,
-            now_cost / 10.0 as price,  -- Convert from tenths to millions
-            ep_this as predicted_points
-        FROM elements 
-        WHERE can_select = 1 
-        AND ep_this IS NOT NULL 
-        AND now_cost > 0
-        ORDER BY id
+    def load_player_data(self, gameweek: int = None, num_weeks: int = 1) -> pd.DataFrame:
+        """Load player data from player_summary table.
+        
+        Note: This method now reads from the player_summary table, which must be
+        populated first using populate_player_summary(). If the table doesn't exist
+        or num_weeks doesn't match, it will be auto-created/updated.
+        
+        Args:
+            gameweek: Specific gameweek (unused, kept for compatibility)
+            num_weeks: Number of weeks to sum predictions for (default: 1)
+            
+        Returns:
+            DataFrame with player data and predicted points (summed over num_weeks)
         """
-        
         with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if player_summary table exists and has correct num_weeks
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='player_summary'
+            """)
+            
+            table_exists = cursor.fetchone() is not None
+            needs_refresh = False
+            
+            if table_exists:
+                # Check if num_weeks matches
+                cursor.execute("""
+                    SELECT DISTINCT num_weeks FROM player_summary LIMIT 1
+                """)
+                result = cursor.fetchone()
+                if not result or result[0] != num_weeks:
+                    needs_refresh = True
+            else:
+                needs_refresh = True
+            
+            # Create/refresh table if needed
+            if needs_refresh:
+                print(f"Refreshing player_summary table with {num_weeks} weeks of predictions...")
+                self.create_player_summary_table()
+                count = self.populate_player_summary(num_weeks)
+                print(f"Populated player_summary with {count} players")
+            
+            # Read from player_summary table
+            query = """
+                SELECT 
+                    player_id as id,
+                    name,
+                    position,
+                    team,
+                    price,
+                    predicted_points
+                FROM player_summary
+                ORDER BY player_id
+            """
+            
             df = pd.read_sql_query(query, conn)
-        
-        # Handle any missing predicted points
-        df['predicted_points'] = df['predicted_points'].fillna(0.0)
         
         return df
     
@@ -349,18 +394,70 @@ class FPLDatabase:
             return None
     
     def update_current_team_with_latest_data(self) -> None:
-        """Update current_team table with latest price and predicted points from elements table."""
+        """Update current_team table with latest price and predicted points from final_predictions table."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Update price and predicted_points for existing current_team players
+            # Check if current_team table exists
             cursor.execute("""
-                UPDATE current_team 
-                SET 
-                    price = (SELECT now_cost / 10.0 FROM elements WHERE elements.id = current_team.player_id),
-                    predicted_points = (SELECT ep_this FROM elements WHERE elements.id = current_team.player_id)
-                WHERE player_id IN (SELECT id FROM elements)
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='current_team'
             """)
+            if cursor.fetchone() is None:
+                # Table doesn't exist - skip update
+                return
+            
+            # Check if final_predictions table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='final_predictions'
+            """)
+            has_predictions = cursor.fetchone() is not None
+            
+            if not has_predictions:
+                # Table doesn't exist yet - use ep_this fallback
+                cursor.execute("""
+                    UPDATE current_team 
+                    SET 
+                        price = (SELECT now_cost / 10.0 FROM elements WHERE elements.id = current_team.player_id),
+                        predicted_points = (SELECT ep_this FROM elements WHERE elements.id = current_team.player_id)
+                    WHERE player_id IN (SELECT id FROM elements)
+                """)
+            else:
+                # Get the next upcoming gameweek
+                cursor.execute("""
+                    SELECT MIN(gameweek) 
+                    FROM final_predictions
+                    WHERE gameweek >= (
+                        SELECT COALESCE(MAX(event), 1) FROM fixtures WHERE finished = 1
+                    ) + 1
+                """)
+                next_gw = cursor.fetchone()[0]
+                
+                if next_gw is None:
+                    # Fallback to ep_this if no predictions available
+                    cursor.execute("""
+                        UPDATE current_team 
+                        SET 
+                            price = (SELECT now_cost / 10.0 FROM elements WHERE elements.id = current_team.player_id),
+                            predicted_points = (SELECT ep_this FROM elements WHERE elements.id = current_team.player_id)
+                        WHERE player_id IN (SELECT id FROM elements)
+                    """)
+                else:
+                    # Update price and predicted_points for existing current_team players
+                    cursor.execute("""
+                        UPDATE current_team 
+                        SET 
+                            price = (SELECT now_cost / 10.0 FROM elements WHERE elements.id = current_team.player_id),
+                            predicted_points = (
+                                SELECT predicted_points 
+                                FROM final_predictions 
+                                WHERE final_predictions.player_id = current_team.player_id 
+                                AND final_predictions.gameweek = ?
+                                LIMIT 1
+                            )
+                        WHERE player_id IN (SELECT id FROM elements)
+                    """, (next_gw,))
             
             # Recalculate and update team_cost and team_points for all records
             cursor.execute("""
@@ -666,29 +763,147 @@ class FPLDatabase:
             return pd.read_sql_query(query, conn, params=params)
     
     def load_top_performers_for_weeks(self, num_weeks: int = 3) -> pd.DataFrame:
-        """Load top performers for the next N weeks based on predicted points."""
-        query = """
-        WITH next_gameweeks AS (
-            SELECT DISTINCT gameweek
-            FROM final_predictions
-            ORDER BY gameweek
-            LIMIT ?
-        )
-        SELECT 
-            e.web_name as name,
-            e.element_type_name as position,
-            t.name as team,
-            SUM(fp.predicted_points) as predicted_points
-        FROM final_predictions fp
-        JOIN elements e ON fp.player_id = e.id
-        JOIN teams t ON e.team = t.id
-        WHERE fp.gameweek IN (SELECT gameweek FROM next_gameweeks)
-        AND e.can_select = 1
-        GROUP BY fp.player_id, e.web_name, e.element_type_name, t.name
-        ORDER BY predicted_points DESC
-        """
+        """Load top performers for the next N weeks from player_summary table.
         
+        Note: Requires player_summary table to be populated with the correct num_weeks.
+        """
         with self.get_connection() as conn:
-            df = pd.read_sql_query(query, conn, params=(num_weeks,))
+            cursor = conn.cursor()
+            
+            # Check if player_summary exists and has correct num_weeks
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='player_summary'
+            """)
+            
+            table_exists = cursor.fetchone() is not None
+            needs_refresh = False
+            
+            if table_exists:
+                cursor.execute("""
+                    SELECT DISTINCT num_weeks FROM player_summary LIMIT 1
+                """)
+                result = cursor.fetchone()
+                if not result or result[0] != num_weeks:
+                    needs_refresh = True
+            else:
+                needs_refresh = True
+            
+            # Create/refresh table if needed
+            if needs_refresh:
+                print(f"Refreshing player_summary table with {num_weeks} weeks of predictions...")
+                self.create_player_summary_table()
+                count = self.populate_player_summary(num_weeks)
+                print(f"Populated player_summary with {count} players")
+            
+            # Query from player_summary
+            query = """
+                SELECT 
+                    name,
+                    position,
+                    team_name as team,
+                    predicted_points
+                FROM player_summary
+                ORDER BY predicted_points DESC
+            """
+            
+            df = pd.read_sql_query(query, conn)
         
         return df
+    
+    def create_player_summary_table(self) -> None:
+        """Create player_summary table for quick access to player data with summed predictions."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Drop existing table to recreate
+            cursor.execute("DROP TABLE IF EXISTS player_summary")
+            
+            # Create player_summary table
+            cursor.execute("""
+                CREATE TABLE player_summary (
+                    player_id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    team INTEGER NOT NULL,
+                    team_name TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    predicted_points REAL NOT NULL,
+                    num_weeks INTEGER NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (team) REFERENCES teams(id)
+                )
+            """)
+            
+            # Create index for faster queries
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_player_summary_position 
+                ON player_summary(position)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_player_summary_team 
+                ON player_summary(team)
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_player_summary_predicted_points 
+                ON player_summary(predicted_points DESC)
+            """)
+            
+            conn.commit()
+    
+    def populate_player_summary(self, num_weeks: int = 3) -> int:
+        """Populate player_summary table with summed predictions for next N weeks.
+        
+        Args:
+            num_weeks: Number of weeks to sum predictions for (default: 3)
+            
+        Returns:
+            Number of players inserted
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Clear existing data
+            cursor.execute("DELETE FROM player_summary")
+            
+            # Insert aggregated player data
+            cursor.execute("""
+                INSERT INTO player_summary (
+                    player_id, name, position, team, team_name, price, 
+                    predicted_points, num_weeks
+                )
+                WITH next_gameweeks AS (
+                    SELECT DISTINCT gameweek
+                    FROM final_predictions
+                    WHERE gameweek >= (
+                        SELECT COALESCE(MAX(event), 1) + 1 FROM fixtures WHERE finished = 1
+                    )
+                    ORDER BY gameweek
+                    LIMIT ?
+                )
+                SELECT 
+                    e.id as player_id,
+                    e.web_name as name,
+                    e.element_type_name as position,
+                    e.team,
+                    t.name as team_name,
+                    e.now_cost / 10.0 as price,
+                    COALESCE(SUM(fp.predicted_points), 0.0) as predicted_points,
+                    ? as num_weeks
+                FROM elements e
+                JOIN teams t ON e.team = t.id
+                LEFT JOIN final_predictions fp 
+                    ON e.id = fp.player_id 
+                    AND fp.gameweek IN (SELECT gameweek FROM next_gameweeks)
+                WHERE e.can_select = 1 
+                AND e.now_cost > 0
+                GROUP BY e.id, e.web_name, e.element_type_name, e.team, t.name, e.now_cost
+                ORDER BY e.id
+            """, (num_weeks, num_weeks))
+            
+            count = cursor.rowcount
+            conn.commit()
+            
+            return count

@@ -22,10 +22,15 @@ class FPLTransferOptimizer:
         self.validator = FPLValidator()
         self.players_df = None
         
-    def find_best_transfer(self, current_team_json: Dict) -> Dict:
-        """Find the top 5 best transfers to maximize points."""
-        # Load all available players first
-        self.players_df = self.db.load_player_data()
+    def find_best_transfer(self, current_team_json: Dict, num_weeks: int = 3) -> Dict:
+        """Find the top 5 best transfers to maximize points.
+        
+        Args:
+            current_team_json: Current team structure
+            num_weeks: Number of weeks to consider for predictions (default: 3)
+        """
+        # Load all available players first with multi-week predictions
+        self.players_df = self.db.load_player_data(num_weeks=num_weeks)
         
         # Parse current team (this now uses the loaded player data)
         current_team = self.validator.parse_current_team(current_team_json, self.players_df)
@@ -38,7 +43,7 @@ class FPLTransferOptimizer:
         current_cost = current_team['price'].sum()
         available_budget = 100.0 - current_cost
         
-        print(f"Current team points: {current_points:.2f}")
+        print(f"Current team points (next {num_weeks} weeks): {current_points:.2f}")
         print(f"Current cost: £{current_cost:.1f}m")
         print(f"Available budget: £{available_budget:.1f}m")
         
