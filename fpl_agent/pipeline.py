@@ -26,7 +26,7 @@ class VariancePenalizedRegression:
     more conservative when predicting for players with inconsistent performance.
     """
     
-    def __init__(self, lambda_penalty=0.1):
+    def __init__(self, lambda_penalty=1.0):
         self.lambda_penalty = lambda_penalty
         self.coef_ = None
         self.intercept_ = None
@@ -335,12 +335,12 @@ class PointsPredictor:
     """
     
     def __init__(self, db: FPLDatabase, model_path: str = "models/player_points_predictors.pkl", 
-                 player_weight: float = 0.5):
+                 player_weight: float = 0.75):
         self.db = db
         self.model_path = Path(model_path)
         self.models = {}  # Player-specific models
         self.position_models = {}  # Position-level models (fallback)
-        self.player_weight = player_weight  # Weight for player model (0.5 means 50% player, 50% position)
+        self.player_weight = player_weight  # Weight for player model (0.75 means 75% player, 25% position)
         self._load_models()
     
     def _load_models(self):
@@ -458,7 +458,7 @@ class PointsPredictor:
                 local_variance = local_variance / np.max(local_variance)
             
             # Train variance-penalized model
-            model = VariancePenalizedRegression(lambda_penalty=0.1)
+            model = VariancePenalizedRegression(lambda_penalty=1.0)
             model.fit(X_scaled, y, local_variance)
         else:
             # Standard linear regression

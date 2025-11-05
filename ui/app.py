@@ -802,7 +802,7 @@ def update_combined_export(team_data):
     team_json = json.dumps(team_data, indent=2)
     
     prompt = """Analyse the following team for FPL for the game week ahead,
-Based on the upcoming week fixture, fitness, rotation risk, player form, opponent strength, position and strategies recalculate the predicted points of the team.
+Based on the upcoming week fixture, fitness, rotation risk, player form, opponent strength, position and strategies recalculate the predicted points of the team for the next three weeks.
 Based on the recalculated data, suggest whether to HOLD, or SELL each player in the team. If have to SELL, suggest the best replacement player considering budge and team constraints.
 
 ---
