@@ -270,15 +270,19 @@ class PlayerMatchContextBuilder:
 class PointsPredictor:
     """Train ML models to predict player points using two-level hierarchy.
     
-    Level 1: Position-specific models (FWD, MID, DEF, GK) for all players
-    Level 2: Player-specific models that fine-tune individual predictions
+    Level 1: Position-specific models (FWD, MID, DEF, GK) - baseline for all players
+    Level 2: Player-specific models - individual skill adjustments
+    
+    Final prediction = weighted blend of both levels (if both available)
     """
     
-    def __init__(self, db: FPLDatabase, model_path: str = "models/player_points_predictors.pkl"):
+    def __init__(self, db: FPLDatabase, model_path: str = "models/player_points_predictors.pkl", 
+                 player_weight: float = 0.7):
         self.db = db
         self.model_path = Path(model_path)
         self.models = {}  # Player-specific models
         self.position_models = {}  # Position-level models (fallback)
+        self.player_weight = player_weight  # Weight for player model (0.7 means 70% player, 30% position)
         self._load_models()
     
     def _load_models(self):
@@ -463,34 +467,60 @@ class PointsPredictor:
         }
     
     def predict(self, player_id, team_attack, team_defense, opp_attack, opp_defense, is_home):
-        """Predict points using two-level hierarchy: player model → position model → 0."""
+        """Predict points using weighted blend of position and player models.
+        
+        Strategy:
+        - If both models available: blend them (e.g., 70% player + 30% position)
+        - If only player model: use it (rare case - new position without baseline)
+        - If only position model: use it (new player without history)
+        - If neither: return 0
+        """
         # Calculate differential features (same as training)
         attack_advantage = team_attack - opp_defense
         defense_advantage = team_defense - opp_attack
         features = np.array([[attack_advantage, defense_advantage, is_home]])
         
-        # Level 2: Try player-specific model first
-        if player_id in self.models:
-            features_scaled = self.models[player_id]['scaler'].transform(features)
-            predicted = self.models[player_id]['model'].predict(features_scaled)[0]
-            return np.clip(predicted, 0, 15)
-        
-        # Level 1: Fallback to position-level model
         # Get player's position from database
+        position = None
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT element_type_name FROM elements WHERE id = ?", 
                 (player_id,)
             )
             row = cursor.fetchone()
-            if row and row[0] in self.position_models:
+            if row:
                 position = row[0]
-                features_scaled = self.position_models[position]['scaler'].transform(features)
-                predicted = self.position_models[position]['model'].predict(features_scaled)[0]
-                return np.clip(predicted, 0, 15)
         
-        # No model available
-        return 0.0
+        # Get predictions from both levels
+        player_prediction = None
+        position_prediction = None
+        
+        # Level 2: Player-specific model
+        if player_id in self.models:
+            features_scaled = self.models[player_id]['scaler'].transform(features)
+            player_prediction = self.models[player_id]['model'].predict(features_scaled)[0]
+        
+        # Level 1: Position-level model
+        if position and position in self.position_models:
+            features_scaled = self.position_models[position]['scaler'].transform(features)
+            position_prediction = self.position_models[position]['model'].predict(features_scaled)[0]
+        
+        # Combine predictions based on availability
+        if player_prediction is not None and position_prediction is not None:
+            # Both available - weighted blend
+            # Example: Haaland's 15 points + FWD baseline 8 points = 70%*15 + 30%*8 = 12.9
+            blended = (self.player_weight * player_prediction + 
+                      (1 - self.player_weight) * position_prediction)
+            return np.clip(blended, 0, 15)
+        elif player_prediction is not None:
+            # Only player model available
+            return np.clip(player_prediction, 0, 15)
+        elif position_prediction is not None:
+            # Only position model available (new player)
+            return np.clip(position_prediction, 0, 15)
+        else:
+            # No model available
+            return 0.0
 
 
 class FinalPredictionsGenerator:
